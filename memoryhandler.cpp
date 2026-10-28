@@ -67,6 +67,31 @@ namespace prism {
 #define virtualizeTextureHW virtualizeTextureDreamcast
 #define unvirtualizeTextureHW unvirtualizeTextureDreamcast
 
+#elif defined(__3DS__)
+	void* allocN3DSTexture(size_t) {
+		N3DSTextureData* data = (N3DSTextureData*)malloc(sizeof(N3DSTextureData));
+		data->mIsInitialized = 0;
+		data->mIndexed = NULL;
+		data->mPaletteVersion = -1;
+		return data;
+	}
+
+	void freeN3DSTexture(void* tData) {
+		N3DSTextureData* data = (N3DSTextureData*)tData;
+		if (data->mIsInitialized) C3D_TexDelete(&data->mTex);
+		free(data->mIndexed);
+		free(tData);
+	}
+
+#define allocTextureHW allocN3DSTexture
+#define freeTextureHW freeN3DSTexture
+
+	void virtualizeTextureN3DS(const TextureMemory&) {}
+	void unvirtualizeTextureN3DS(const TextureMemory&) {}
+
+#define virtualizeTextureHW virtualizeTextureN3DS
+#define unvirtualizeTextureHW unvirtualizeTextureN3DS
+
 #elif defined __linux__
 	void* allocGLTexture(size_t) {
 		GLTextureData* data = (GLTextureData*)malloc(sizeof(GLTextureData));

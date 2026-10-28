@@ -77,6 +77,12 @@ namespace prism {
 
 
 
+#ifdef __3DS__
+#ifndef N3DS_GAME_FOLDER
+#define N3DS_GAME_FOLDER "sdmc:/3ds/dolmexica"
+#endif
+#endif
+
 	static struct {
 		char cwd[1024];
 		char mFileSystem[1024];
@@ -115,6 +121,13 @@ namespace prism {
 			mountRomdisk("assets.pak", "ASSETS");
 			strcpy(gPrismWindowsFileData.mFileSystem, "/ASSETS");
 		}
+#ifdef __3DS__
+		// [3DS] The game's folder on the SD card ("$/rd/", prism's own
+		// files, comes from the romfs: see getFullPath).
+		else {
+			strcpy(gPrismWindowsFileData.mFileSystem, N3DS_GAME_FOLDER);
+		}
+#endif
 	}
 
 	void shutdownFileSystem() {
@@ -181,6 +194,12 @@ namespace prism {
 			return;
 		}
 
+#ifdef __3DS__
+		if (!strncmp(tPath, "$/rd/", 5)) {
+			sprintf(tDest, "romfs:/%s", tPath + 5);
+			return;
+		}
+#endif
 		if (tPath[0] == '$') tPath += 4;
 
 		if (tPath[0] == '/') {

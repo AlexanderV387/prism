@@ -26,7 +26,7 @@ namespace prism {
 	}
 
 	// for rollback determinism tests
-#if !defined(DREAMCAST) && !defined(VITA) && !defined(__EMSCRIPTEN__)
+#if !defined(DREAMCAST) && !defined(VITA) && !defined(__EMSCRIPTEN__) && !defined(__3DS__)
 #define PRISM_COUNT_RANDOM_CALLS 1
 #endif
 

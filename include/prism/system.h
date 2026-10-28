@@ -13,6 +13,9 @@ namespace prism {
 #elif defined DREAMCAST
 #define PERFORMANCE_FACTOR_INVERTED 10
 
+#elif defined __3DS__
+#define PERFORMANCE_FACTOR_INVERTED 5
+
 #endif 
 
 #define PERFORMANCE_FACTOR (1.0/PERFORMANCE_FACTOR_INVERTED)

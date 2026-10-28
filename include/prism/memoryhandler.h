@@ -9,6 +9,23 @@
 namespace prism {
 typedef pvr_ptr_t Texture;
 
+#elif defined(__3DS__)
+#include <citro3d.h>
+
+namespace prism {
+
+// [3DS] A texture on the GPU (power-of-two sizes, at most 1024). Paletted
+// images keep their 8-bit pixels: the GPU has no palettes, so they are
+// converted with their palette when drawn after it changed.
+typedef struct {
+	C3D_Tex mTex;
+	int mIsInitialized;
+	unsigned char* mIndexed;
+	int mPaletteVersion;
+} N3DSTextureData;
+
+typedef N3DSTextureData* Texture;
+
 #elif defined __linux__
 
 namespace prism {

@@ -18,7 +18,7 @@
 
 #ifdef __EMSCRIPTEN__
 #define SDL_strncasecmp SDL_strncasecmp
-#elif defined __linux__
+#elif defined __linux__ || defined __3DS__
 #include <strings.h>
 #define SDL_strncasecmp strncasecmp
 #elif defined (VITA)

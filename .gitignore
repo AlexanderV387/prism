@@ -48,3 +48,6 @@ bin/*
 windows/vs17/LIB/fmod_vc.lib
 windows/vs17/DLL/fmod.dll
 web/LIB/libfmod.a
+
+build_3ds/
+bin_3ds/

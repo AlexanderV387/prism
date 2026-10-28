@@ -1,0 +1,57 @@
+# Nintendo 3DS (New 3DS) build of prism, with devkitARM and libctru.
+#
+# Usage (devkitPro environment): make -f Makefile.3ds -j$(nproc)
+
+include Makefile.common
+
+# Portable backend files shared with the Windows/Web/Linux builds.
+OBJS += windows/file_win.o windows/math_win.o \
+windows/romdisk_win.o windows/saveload_win.o windows/memoryhandler_win.o windows/logoscreen_win.o \
+windows/framerateselect_win.o \
+web/netplay_web.o
+
+OBJS += 3ds/system_3ds.o 3ds/drawing_3ds.o 3ds/texture_3ds.o 3ds/log_3ds.o 3ds/prism3ds_shbin.o \
+3ds/input_3ds.o 3ds/screeneffect_3ds.o \
+3ds/sound_3ds.o 3ds/soundeffect_3ds.o 3ds/thread_3ds.o 3ds/windowfocusscreen_3ds.o
+
+OBJDIR = build_3ds
+BINDIR = bin_3ds
+N3DS_OBJS = $(addprefix $(OBJDIR)/,$(OBJS))
+
+DEVKITPRO ?= /opt/devkitpro
+PREFIX = $(DEVKITPRO)/devkitARM/bin/arm-none-eabi-
+CXX = $(PREFIX)g++
+AR = $(PREFIX)gcc-ar
+
+ARCH = -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
+CXXFLAGS = $(ARCH) -std=gnu++17 -fpermissive -O2 -g -mword-relocations -ffunction-sections \
+	-Wno-write-strings -D__3DS__ -Iinclude -Ilinux/shim -I$(OBJDIR)/3ds \
+	-I$(DEVKITPRO)/libctru/include -I$(DEVKITPRO)/portlibs/3ds/include
+
+all: $(BINDIR)/libprism.a
+
+$(OBJDIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# The vertex shader, assembled and linked in as data (prism3ds_shbin.h).
+$(OBJDIR)/3ds/prism3ds.shbin: 3ds/prism3ds.v.pica
+	@mkdir -p $(dir $@)
+	$(DEVKITPRO)/tools/bin/picasso -o $@ $<
+
+$(OBJDIR)/3ds/prism3ds_shbin.h: $(OBJDIR)/3ds/prism3ds_shbin.o
+
+$(OBJDIR)/3ds/prism3ds_shbin.o: $(OBJDIR)/3ds/prism3ds.shbin
+	cd $(OBJDIR)/3ds && $(DEVKITPRO)/tools/bin/bin2s -H prism3ds_shbin.h prism3ds.shbin > prism3ds_shbin.s
+	$(PREFIX)gcc $(ARCH) -x assembler-with-cpp -c $(OBJDIR)/3ds/prism3ds_shbin.s -o $(OBJDIR)/3ds/prism3ds_shbin.o
+
+$(OBJDIR)/3ds/drawing_3ds.o: $(OBJDIR)/3ds/prism3ds_shbin.h
+
+$(BINDIR)/libprism.a: $(N3DS_OBJS)
+	@mkdir -p $(BINDIR)
+	$(AR) rcs $@ $(N3DS_OBJS)
+
+clean:
+	rm -rf $(OBJDIR) $(BINDIR)
+
+.PHONY: all clean
