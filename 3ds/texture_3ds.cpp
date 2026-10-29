@@ -13,8 +13,8 @@
 
 // [3DS] Textures on the PICA200: power-of-two sizes from 8 to 1024, in 8x8
 // tiles of pixels in Z order, the image's first row at the bottom (so that
-// v = 0 is the image's top: drawing_3ds.cpp). 32-bit and paletted images
-// as RGBA8, 16-bit ones as RGBA4. The GPU has no palettes: paletted images
+// v = 0 is the image's top: drawing_3ds.cpp). 32-bit images as RGBA8,
+// paletted ones as RGBA5551, 16-bit ones as RGBA4. The GPU has no palettes: paletted images
 // keep their 8-bit pixels and are converted with their palette when drawn
 // after it changed.
 
@@ -140,7 +140,9 @@ namespace prism {
 	}
 
 	TextureData loadPalettedTextureFrom8BitBuffer(const Buffer& b, int tPaletteID, int tWidth, int tHeight) {
-		TextureData ret = makeTexture(tWidth, tHeight, GPU_RGBA8);
+		// RGBA5551: half the memory of RGBA8, and the palettes' alpha is
+		// all or nothing (color 0 transparent).
+		TextureData ret = makeTexture(tWidth, tHeight, GPU_RGBA5551);
 		ret.mHasPalette = 1;
 		ret.mPaletteID = tPaletteID;
 
@@ -159,8 +161,12 @@ namespace prism {
 		if (texture->mPaletteVersion == gN3DSPaletteVersions[id]) return;
 
 		C3D_Tex* tex = &texture->mTex;
-		u32* dst = (u32*)tex->data;
-		const u32* palette = gN3DSPalettes[id];
+		u16* dst = (u16*)tex->data;
+		u16 palette[256];
+		for (int i = 0; i < 256; i++) {
+			const u32 c = gN3DSPalettes[id][i];
+			palette[i] = (u16)((((c >> 27) & 0x1F) << 11) | (((c >> 19) & 0x1F) << 6) | (((c >> 11) & 0x1F) << 1) | ((c & 0xFF) >= 0x80));
+		}
 		const int w = clampedWidth(tTexture.mTextureSize.x), h = clampedWidth(tTexture.mTextureSize.y);
 
 		for (int y = 0; y < h; y++) {
