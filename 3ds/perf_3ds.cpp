@@ -34,8 +34,6 @@ namespace prism {
 		uint64_t mFrameTicks, mWorstFrame;
 		uint32_t mSlowFrames;   // over 17 ms
 		uint32_t mVerySlowFrames;   // over 34 ms
-
-		int mSpriteVariant;
 	} gPerf;
 
 	uint64_t getN3DSPerfTicks() { return svcGetSystemTick(); }
@@ -134,10 +132,6 @@ namespace prism {
 		gPerf.mFile = fopen(N3DS_PERF_FILE, "w");
 		setLogCallback(logCallback, NULL);
 		addN3DSPerfLine("load-time log: time in ms since the start, then what happened");
-	}
-
-	int getNextN3DSSpriteReadVariant() {
-		return gPerf.mSpriteVariant++ % N3DS_SPRITE_READ_AMOUNT;
 	}
 
 	void addN3DSPerfFrame() {

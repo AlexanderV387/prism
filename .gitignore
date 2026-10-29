@@ -51,3 +51,5 @@ web/LIB/libfmod.a
 
 build_3ds/
 bin_3ds/
+bin_linux/
+build_linux/

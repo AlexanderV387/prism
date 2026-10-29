@@ -1455,9 +1455,11 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	checkMugenSpriteFileReader();
 
 #ifdef __3DS__
-	// [3DS] The ways of reading the file, in turn, and what each took.
+	// [3DS] Read at once: the SD card is slow at small reads (Kung Fu Man's
+	// sprites: 3.4 to 4.5 s in small reads, 0.4 s through a 64 KB buffer,
+	// 0.3 s whole). Files too big for the heap go through the 64 KB buffer.
 	const FileReader originalN3DSReader = gPrismMugenSpriteFileReaderData.mReader;
-	const int n3dsVariant = getNextN3DSSpriteReadVariant();
+	const int n3dsVariant = getFileSize(tPath) <= 16 * 1024 * 1024 ? N3DS_SPRITE_READ_WHOLE : N3DS_SPRITE_READ_BIG_BUFFER;
 	const N3DSPerfCounters n3dsBefore = gN3DSPerf;
 	const uint64_t n3dsStart = getN3DSPerfTicks();
 	if (n3dsVariant == N3DS_SPRITE_READ_WHOLE) gPrismMugenSpriteFileReaderData.mReader = getBufferFileReader();

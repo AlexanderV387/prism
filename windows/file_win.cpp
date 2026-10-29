@@ -256,7 +256,8 @@ namespace prism {
 		auto ret = fopen(path, flags);
 		gN3DSPerf.mOpenTicks += getN3DSPerfTicks() - openStart;
 		gN3DSPerf.mOpens++;
-		if (ret && gN3DSFileBufferSize) setvbuf(ret, NULL, _IOFBF, gN3DSFileBufferSize);
+		// [3DS] A 64 KB buffer: the SD card is slow at small reads.
+		if (ret && tFlags == O_RDONLY) setvbuf(ret, NULL, _IOFBF, gN3DSFileBufferSize ? gN3DSFileBufferSize : 64 * 1024);
 #else
 		auto ret = fopen(path, flags);
 #endif
