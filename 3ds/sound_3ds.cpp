@@ -13,6 +13,8 @@
 #include "prism/file.h"
 #include "prism/log.h"
 
+#include "prism3dsperf.h"
+
 // [3DS] Music: MP3 (libmpg123), OGG (Tremor) and WAV files streamed to the
 // DSP's last channel. A thread decodes ahead (on the New 3DS's third core
 // when it can), woken by ndsp after each of its frames; the main thread
@@ -338,6 +340,7 @@ namespace prism {
 			gN3DSMusic.mIsPaused = 0;
 			gN3DSMusic.mFramesPlayed = 0;
 			fillBuffers();
+			addN3DSPerfLine("  music %s: %ld Hz, %d channels", path, gN3DSMusic.mRate, gN3DSMusic.mChannels);
 		}
 		else {
 			logWarningFormat("Unable to play the music %s.", path);

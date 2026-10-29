@@ -451,6 +451,8 @@ namespace prism {
 		memset(&gCounterParts, 0, sizeof(gCounterParts));
 	}
 
+	uint32_t getN3DSPerfFramesShown() { return gPerf.mIsLoading ? 0 : gPerf.mFrames; }
+
 	// Game frames whose picture was left out since the last one drawn.
 	static uint32_t gSkippedSinceDrawn;
 

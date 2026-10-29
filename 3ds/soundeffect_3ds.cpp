@@ -167,9 +167,12 @@ namespace prism {
 		// that close together (the far side silent sounded lopsided).
 		const float panning = gN3DSSoundEffectData.mChannelPanning[tChannel];
 		static const float PANNING_WIDTH = 0.5f;
+		// At most full volume: louder (a character's volume = 255 gave 3.5
+		// times) clipped into a buzz.
+		const float level = std::min(volume, 1.0f);
 		float mix[12] = { 0 };
-		mix[0] = volume * std::min(1.0f, 1 - panning * PANNING_WIDTH);
-		mix[1] = volume * std::min(1.0f, 1 + panning * PANNING_WIDTH);
+		mix[0] = level * std::min(1.0f, 1 - panning * PANNING_WIDTH);
+		mix[1] = level * std::min(1.0f, 1 + panning * PANNING_WIDTH);
 		ndspChnSetMix(toDSPChannel(tChannel), mix);
 	}
 
@@ -215,6 +218,17 @@ namespace prism {
 		buf->looping = tIsLooping ? true : false;
 		gN3DSSoundEffectData.mPlaying[tChannel] = e.mData;
 		ndspChnWaveBufAdd(dsp, buf);
+
+		// For the load log: the sounds of a screen's first 5 seconds.
+		static uint32_t loggedOnScreen = 0, lastFrames = 0xFFFFFFFF;
+		const uint32_t frames = getN3DSPerfFramesShown();
+		if (frames < lastFrames) loggedOnScreen = 0;
+		lastFrames = frames;
+		if (frames < 300 && loggedOnScreen < 40) {
+			loggedOnScreen++;
+			addN3DSPerfLine("  sound %d at frame %u: channel %d, %u samples, %d channels, %u Hz (x%.2f), volume %.2f%s",
+				tID, (unsigned)frames, tChannel, (unsigned)e.mSampleAmount, e.mChannelAmount, (unsigned)e.mRate, tFreqMul, tVolume, tIsLooping ? ", looping" : "");
+		}
 		return tChannel;
 	}
 
