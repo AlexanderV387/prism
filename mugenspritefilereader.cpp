@@ -28,6 +28,9 @@
 #endif
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 #include "3ds/prism3ds.h"
+#include <malloc.h>
+// The heap guard, on the 3DS and in its simulation.
+#define N3DS_HEAP_GUARD
 #endif
 
 #ifdef _WIN32
@@ -832,7 +835,7 @@ static void insertPaletteIntoMugenSpriteFile(MugenSpriteFile* tSprites, const Bu
 }
 
  
-#ifdef __3DS__
+#ifdef N3DS_HEAP_GUARD
 extern "C" {
 	extern u32 __ctru_heap_size;
 }
@@ -850,20 +853,27 @@ void setMugenSpriteFileReaderHeapReserve(size_t tReserve) {
 	gN3DSSpriteHeapReserve = tReserve;
 }
 
+// A screen-sized sprite (a super move's full-screen frames, a cut-in) also
+// leaves 4 MB more: when not all fit, the many small ones after it (the
+// moves' sprites, effects) come first.
+static const size_t N3DS_BIG_SPRITE_NEED = 512 * 1024;
+static const size_t N3DS_BIG_SPRITE_EXTRA_RESERVE = 4 * 1024 * 1024;
+
 static int hasN3DSHeapRoomForSprite(size_t tNeeded) {
 	if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits) return 1;
+	const size_t reserve = gN3DSSpriteHeapReserve + (tNeeded >= N3DS_BIG_SPRITE_NEED ? N3DS_BIG_SPRITE_EXTRA_RESERVE : 0);
 	if (!(gN3DSHeapUsedCheckedSprites++ & 15)) gN3DSHeapUsed = mallinfo().uordblks;
 	gN3DSHeapUsed += tNeeded / 3;
-	if (gN3DSHeapUsed + tNeeded + gN3DSSpriteHeapReserve > __ctru_heap_size) {
+	if (gN3DSHeapUsed + tNeeded + reserve > __ctru_heap_size) {
 		gN3DSHeapUsed = mallinfo().uordblks;
 		gN3DSHeapUsedCheckedSprites = 1;
-		if (gN3DSHeapUsed + tNeeded + gN3DSSpriteHeapReserve > __ctru_heap_size) {
+		if (gN3DSHeapUsed + tNeeded + reserve > __ctru_heap_size) {
 			gN3DSSpritesLeftOut++;
 			logWarning("Out of heap memory: a sprite left out.");
 			return 0;
 		}
 	}
-	if (tNeeded >= 512 * 1024) {
+	if (tNeeded >= N3DS_BIG_SPRITE_NEED) {
 		// In one piece, as it is asked for.
 		void* probe = malloc(tNeeded + 1024 * 1024);
 		if (!probe) {
@@ -936,8 +946,11 @@ static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int
 	}
 	assert(!tDst->mPalettes.empty());
 
-#ifdef __3DS__
+#ifdef N3DS_HEAP_GUARD
 	if (!hasN3DSHeapRoomForSprite((size_t)pcxImageSize * 3)) {
+#if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+		if (getenv("N3DS_SIM_TRACE_LEFT_OUT")) fprintf(stderr, "n3dssim: left out %d (%dx%d)\n", gPCXSpriteGroup, w, h);
+#endif
 		return makeMugenSpriteFileSprite(std::vector<MugenSpriteFileSubSprite>(), makeTextureSize(w, h), tAxisOffset);
 	}
 #endif
@@ -1407,7 +1420,7 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 	const int palette = tHasPalette ? sprite.mPaletteIndex + 1 : sprite.mPaletteIndex;
 
 	MugenSpriteFileSprite e;
-#ifdef __3DS__
+#ifdef N3DS_HEAP_GUARD
 	// A PNG is decoded to 32 bits and copied once more in pieces (twice its
 	// pixels in 4 bytes), whatever its depth; the others, its 8-bit pixels.
 	if ((isPaletted || isRawPNG) && !hasN3DSHeapRoomForSprite((size_t)sprite.mWidth * sprite.mHeight * (isRawPNG ? 8 : 3) + sprite.mDataLength)) {
@@ -1716,6 +1729,12 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	if (n3dsVariant == N3DS_SPRITE_READ_WINDOWED) gPrismMugenSpriteFileReaderData.mReader = getWindowedFileFileReader();
 	if (n3dsVariant == N3DS_SPRITE_READ_BIG_BUFFER) gN3DSFileBufferSize = 64 * 1024;
 	if (n3dsVariant == N3DS_SPRITE_READ_PORTRAITS) gN3DSFileBufferSize = 4 * 1024;
+#elif defined(N3DS_TEXTURE_SIM)
+	// As on the 3DS: big files a window at a time.
+	const FileReader originalN3DSReader = gPrismMugenSpriteFileReaderData.mReader;
+	gN3DSSpritesLeftOut = 0;
+	gN3DSHeapUsedCheckedSprites = 0;
+	if (getFileSize(tPath) > 2 * 1024 * 1024) gPrismMugenSpriteFileReaderData.mReader = getWindowedFileFileReader();
 #endif
 	gPrismMugenSpriteFileReaderData.mReader.mInit(&gPrismMugenSpriteFileReaderData.mReader, tPath);
 #ifdef __3DS__
@@ -1747,10 +1766,14 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	}
 
 	gPrismMugenSpriteFileReaderData.mReader.mDelete(&gPrismMugenSpriteFileReaderData.mReader);
+#if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+	gPrismMugenSpriteFileReaderData.mReader = originalN3DSReader;
+	if (gN3DSSpritesLeftOut) fprintf(stderr, "n3dssim: %s: %d sprites left out, no room in the heap\n", tPath, gN3DSSpritesLeftOut);
+#endif
 #ifdef __3DS__
 	gPrismMugenSpriteFileReaderData.mReader = originalN3DSReader;
 	{
-		static const char* variantNames[] = { "small reads", "64 KB buffer", "whole file", "portraits from the cache, 4 KB buffer", "1 MB at a time" };
+		static const char* variantNames[] = { "small reads", "64 KB buffer", "whole file", "portraits from the cache, 4 KB buffer", "512 KB windows" };
 		const double total = getN3DSPerfMilliseconds(getN3DSPerfTicks() - n3dsStart);
 		const double io = getN3DSPerfMilliseconds((gN3DSPerf.mOpenTicks - n3dsBefore.mOpenTicks) + (gN3DSPerf.mReadTicks - n3dsBefore.mReadTicks) + (gN3DSPerf.mSeekTicks - n3dsBefore.mSeekTicks));
 		const double tex = getN3DSPerfMilliseconds(gN3DSPerf.mTextureTicks - n3dsBefore.mTextureTicks);

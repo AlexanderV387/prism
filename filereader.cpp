@@ -154,18 +154,28 @@ namespace prism {
 		return ret;
 	}
 
-	// A file read a window at a time (1 MB): reads and seeks inside the window
-	// cost nothing, large reads keep the SD card fast, and only the window is
-	// in memory (not the whole file).
-	static const uint32_t FILE_READER_WINDOW_SIZE = 1024 * 1024;
+	// A file read a window at a time: reads and seeks inside a window cost
+	// nothing, large reads keep the SD card fast, and only the windows are
+	// in memory (not the whole file). Three of them, the one used longest ago
+	// filled anew: an SFF v2 goes back and forth between its table of sprites
+	// and their pixels (two places), each jump was a new 1 MB read with one
+	// window (2.5 GB read for a 19 MB file).
+	static const uint32_t FILE_READER_WINDOW_SIZE = 512 * 1024;
+	static const int FILE_READER_WINDOW_AMOUNT = 3;
+
+	typedef struct {
+		char* mData;
+		uint32_t mStart;
+		uint32_t mLength;
+		uint32_t mLastUsed;
+	} FileReaderWindow;
 
 	typedef struct {
 		FileHandler mFile;
 		uint32_t mFileSize;
 		uint32_t mPosition;
-		char* mWindow;
-		uint32_t mWindowStart;
-		uint32_t mWindowLength;
+		FileReaderWindow mWindows[FILE_READER_WINDOW_AMOUNT];
+		uint32_t mUseCounter;
 		int mIsOver;
 	} WindowedFileReaderData;
 
@@ -174,8 +184,11 @@ namespace prism {
 		data->mFile = fileOpen(tPath, O_RDONLY);
 		data->mFileSize = uint32_t(fileTotal(data->mFile));
 		data->mPosition = 0;
-		data->mWindow = (char*)allocMemory(FILE_READER_WINDOW_SIZE);
-		data->mWindowStart = data->mWindowLength = 0;
+		for (auto& window : data->mWindows) {
+			window.mData = (char*)allocMemory(FILE_READER_WINDOW_SIZE);
+			window.mStart = window.mLength = window.mLastUsed = 0;
+		}
+		data->mUseCounter = 0;
 		data->mIsOver = 0;
 		tReader->mData = data;
 	}
@@ -183,28 +196,42 @@ namespace prism {
 	static void deleteWindowedFileReader(FileReader* tReader) {
 		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
 		fileClose(data->mFile);
-		freeMemory(data->mWindow);
+		for (auto& window : data->mWindows) freeMemory(window.mData);
 		freeMemory(data);
 	}
 
-	static int isInWindow(WindowedFileReaderData* tData, uint32_t tPosition, uint32_t tSize) {
-		return tPosition >= tData->mWindowStart && tPosition + tSize <= tData->mWindowStart + tData->mWindowLength;
+	// The window holding these bytes, NULL if none.
+	static FileReaderWindow* findWindow(WindowedFileReaderData* tData, uint32_t tPosition, uint32_t tSize) {
+		for (auto& window : tData->mWindows) {
+			if (tPosition >= window.mStart && tPosition + tSize <= window.mStart + window.mLength) {
+				window.mLastUsed = ++tData->mUseCounter;
+				return &window;
+			}
+		}
+		return NULL;
 	}
 
-	static void fillWindow(WindowedFileReaderData* tData, uint32_t tPosition) {
-		tData->mWindowStart = tPosition;
-		tData->mWindowLength = 0;
-		if (tPosition >= tData->mFileSize) return;
+	static FileReaderWindow* fillWindow(WindowedFileReaderData* tData, uint32_t tPosition) {
+		FileReaderWindow* window = &tData->mWindows[0];
+		for (auto& other : tData->mWindows) {
+			if (other.mLastUsed < window->mLastUsed) window = &other;
+		}
+		window->mStart = tPosition;
+		window->mLength = 0;
+		window->mLastUsed = ++tData->mUseCounter;
+		if (tPosition >= tData->mFileSize) return window;
 		const uint32_t length = tData->mFileSize - tPosition < FILE_READER_WINDOW_SIZE ? tData->mFileSize - tPosition : FILE_READER_WINDOW_SIZE;
 		fileSeek(tData->mFile, tPosition, SEEK_SET);
-		tData->mWindowLength = uint32_t(fileRead(tData->mFile, tData->mWindow, length));
+		window->mLength = uint32_t(fileRead(tData->mFile, window->mData, length));
+		return window;
 	}
 
 	static void readWindowedFileReader(FileReader* tReader, void* tDst, uint32_t tSize) {
 		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
 		char* dst = (char*)tDst;
 		while (tSize) {
-			if (!isInWindow(data, data->mPosition, 1)) {
+			FileReaderWindow* window = findWindow(data, data->mPosition, 1);
+			if (!window) {
 				if (tSize >= FILE_READER_WINDOW_SIZE) {
 					fileSeek(data->mFile, data->mPosition, SEEK_SET);
 					const uint32_t read = uint32_t(fileRead(data->mFile, dst, tSize));
@@ -212,16 +239,16 @@ namespace prism {
 					if (read < tSize) memset(dst + read, 0, tSize - read);
 					return;
 				}
-				fillWindow(data, data->mPosition);
-				if (!data->mWindowLength) {
+				window = fillWindow(data, data->mPosition);
+				if (!window->mLength) {
 					memset(dst, 0, tSize);
 					return;
 				}
 			}
-			const uint32_t offset = data->mPosition - data->mWindowStart;
-			uint32_t amount = data->mWindowLength - offset;
+			const uint32_t offset = data->mPosition - window->mStart;
+			uint32_t amount = window->mLength - offset;
 			if (amount > tSize) amount = tSize;
-			memcpy(dst, data->mWindow + offset, amount);
+			memcpy(dst, window->mData + offset, amount);
 			dst += amount;
 			data->mPosition += amount;
 			tSize -= amount;
@@ -236,14 +263,17 @@ namespace prism {
 		}
 	}
 
-	// Inside the window, the window itself (valid until the next read).
+	// Inside a window, the window itself (valid until that window is filled
+	// anew: at least until the next read).
 	static Buffer readWindowedFileReaderBuffer(FileReader* tReader, uint32_t tSize) {
 		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
-		if (tSize < FILE_READER_WINDOW_SIZE && !isInWindow(data, data->mPosition, tSize)) {
-			fillWindow(data, data->mPosition);
+		FileReaderWindow* window = findWindow(data, data->mPosition, tSize);
+		if (!window && tSize < FILE_READER_WINDOW_SIZE) {
+			window = fillWindow(data, data->mPosition);
+			if (!(data->mPosition + tSize <= window->mStart + window->mLength)) window = NULL;
 		}
-		if (isInWindow(data, data->mPosition, tSize)) {
-			return makeBuffer(data->mWindow + (data->mPosition - data->mWindowStart), tSize);
+		if (window) {
+			return makeBuffer(window->mData + (data->mPosition - window->mStart), tSize);
 		}
 		const uint32_t originalPosition = data->mPosition;
 		char* dst = (char*)allocMemory(tSize + 10);

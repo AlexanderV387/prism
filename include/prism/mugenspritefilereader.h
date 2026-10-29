@@ -59,7 +59,7 @@ void setMugenSpriteFileReaderToUsePalette(int tPaletteID);
 void setMugenSpriteFileReaderToNotUsePalette();
 void setMugenSpriteFileReaderCustomFunctionsAndForceARGB16(TextureData(*mCustomLoadTextureFromARGB16Buffer)(const Buffer&, int, int), TextureData(*mCustomLoadTextureFromARGB32Buffer)(const Buffer&, int, int), TextureData(*mCustomLoadPalettedTextureFrom8BitBuffer)(const Buffer&, int, int, int));
 void setMugenSpriteFileReaderSubTextureSplit(int tSubTextureSplitMin, int tSubTextureSplitMax);
-#ifdef __3DS__
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 // [3DS] The heap kept free while loading sprites (sprites that would take it
 // are left out).
 void setMugenSpriteFileReaderHeapReserve(size_t tReserve);

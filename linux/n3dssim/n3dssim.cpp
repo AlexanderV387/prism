@@ -18,6 +18,80 @@
 #include "../../3ds/prism3ds.h"
 #include "../../3ds/prism3dsperf.h"
 
+extern "C" {
+	u32 __ctru_heap_size = 48 * 1024 * 1024 - 512 * 1024;
+}
+
+// The 3DS's heap (48 MB, the 512 KB stack inside it): with N3DS_SIM_HEAP
+// (bytes, without AddressSanitizer), allocations past it fail as there,
+// mallinfo() telling what is in use as newlib's does; textures (linear
+// memory on the 3DS) are not in it.
+#if !defined(__SANITIZE_ADDRESS__)
+#include <malloc.h>
+extern "C" {
+	void* __libc_malloc(size_t);
+	void __libc_free(void*);
+	void* __libc_calloc(size_t, size_t);
+	void* __libc_realloc(void*, size_t);
+	void* __libc_memalign(size_t, size_t);
+}
+static size_t gHeapUsed = 0;
+static int gHeapLimitState = -1;   // -1 not looked at yet, 0 none, 1 limited
+static size_t gHeapLimit = 0;
+
+static int isHeapLimited() {
+	if (gHeapLimitState < 0) {
+		const char* env = getenv("N3DS_SIM_HEAP");
+		gHeapLimitState = env ? 1 : 0;
+		if (env) gHeapLimit = strtoull(env, NULL, 10);
+		if (env) __ctru_heap_size = (u32)gHeapLimit;
+	}
+	return gHeapLimitState;
+}
+
+static void* countAllocation(void* tPointer) {
+	if (tPointer) gHeapUsed += malloc_usable_size(tPointer);
+	return tPointer;
+}
+
+static int hasHeapRoom(size_t tSize) {
+	return !isHeapLimited() || gHeapUsed + tSize <= gHeapLimit;
+}
+
+extern "C" {
+	void* malloc(size_t tSize) { return hasHeapRoom(tSize) ? countAllocation(__libc_malloc(tSize)) : NULL; }
+	void free(void* tPointer) {
+		if (tPointer) gHeapUsed -= malloc_usable_size(tPointer);
+		__libc_free(tPointer);
+	}
+	void* calloc(size_t tAmount, size_t tSize) { return hasHeapRoom(tAmount * tSize) ? countAllocation(__libc_calloc(tAmount, tSize)) : NULL; }
+	void* realloc(void* tPointer, size_t tSize) {
+		const size_t before = tPointer ? malloc_usable_size(tPointer) : 0;
+		if (tSize > before && !hasHeapRoom(tSize - before)) return NULL;
+		void* ret = __libc_realloc(tPointer, tSize);
+		if (ret || !tSize) gHeapUsed -= before;
+		return countAllocation(ret);
+	}
+	void* memalign(size_t tAlignment, size_t tSize) { return hasHeapRoom(tSize) ? countAllocation(__libc_memalign(tAlignment, tSize)) : NULL; }
+	void* aligned_alloc(size_t tAlignment, size_t tSize) { return memalign(tAlignment, tSize); }
+	int posix_memalign(void** oPointer, size_t tAlignment, size_t tSize) {
+		*oPointer = memalign(tAlignment, tSize);
+		return *oPointer ? 0 : 12;
+	}
+	struct mallinfo mallinfo(void) noexcept {
+		struct mallinfo ret;
+		memset(&ret, 0, sizeof(ret));
+		ret.uordblks = (int)gHeapUsed;
+		return ret;
+	}
+}
+#define TEXTURE_MALLOC __libc_malloc
+#define TEXTURE_FREE __libc_free
+#else
+#define TEXTURE_MALLOC malloc
+#define TEXTURE_FREE free
+#endif
+
 static size_t gLinearBudget = 0, gLinearUsed = 0;
 static const unsigned int TEX_MAGIC = 0x7E7A11ED;
 
@@ -37,7 +111,7 @@ bool C3D_TexInit(C3D_Tex* tex, u16 width, u16 height, GPU_TEXCOLOR format) {
 	tex->width = width; tex->height = height; tex->fmt = format;
 	if ((width & (width - 1)) || (height & (height - 1)) || width < 8 || height < 8 || width > 1024 || height > 1024) return false;
 	if (gLinearUsed + size > getBudget()) return false;
-	tex->data = malloc(size);
+	tex->data = TEXTURE_MALLOC(size);
 	tex->size = size;
 	tex->magic = TEX_MAGIC;
 	gLinearUsed += size;
@@ -58,7 +132,7 @@ void C3D_TexDelete(C3D_Tex* tex) {
 #endif
 	}
 	gLinearUsed -= tex->size;
-	free(tex->data);
+	TEXTURE_FREE(tex->data);
 	tex->data = NULL;
 	tex->magic = 0;
 }

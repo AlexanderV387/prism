@@ -4,6 +4,7 @@
 #include "prism/log.h"
 #include "prism/memoryhandler.h"
 #include "prism/wrapper.h"
+#include "prism/n3dsperf.h"
 
 #ifdef _WIN32
 #include <vector>
@@ -145,7 +146,15 @@ namespace prism {
 			unloadActor(e);
 			return 1;
 		}
-		if (e->mBP.mUpdate) e->mBP.mUpdate(e->mData);
+		if (e->mBP.mUpdate) {
+#ifdef __3DS__
+			const uint64_t start = getN3DSLogicPartTicks();
+			e->mBP.mUpdate(e->mData);
+			addN3DSLogicPartTicksForAddress((const void*)e->mBP.mUpdate, getN3DSLogicPartTicks() - start);
+#else
+			e->mBP.mUpdate(e->mData);
+#endif
+		}
 		return 0;
 	}
 

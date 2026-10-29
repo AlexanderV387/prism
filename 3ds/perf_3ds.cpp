@@ -1,3 +1,5 @@
+#include <algorithm>
+#include "prism/n3dsperf.h"
 #include "prism3dsperf.h"
 
 #include <stdio.h>
@@ -27,6 +29,8 @@ namespace prism {
 
 	N3DSPerfCounters gN3DSPerf;
 	int gN3DSFileBufferSize;
+
+	static void resetLogicParts();
 
 	// Where frames' time went: game logic (the rest), making the drawing,
 	// waiting for the GPU and the screen; the GPU's own drawing time.
@@ -150,6 +154,7 @@ namespace prism {
 		gPerf.mFrames = 0;
 		memset(&gPerf.mParts, 0, sizeof(gPerf.mParts));
 		memset(&gPerf.mInterval, 0, sizeof(gPerf.mInterval));
+		resetLogicParts();
 		gPerf.mIntervalNumber = 0;
 		gPerf.mFrameTicks = gPerf.mWorstFrame = 0;
 		gPerf.mSlowFrames = gPerf.mVerySlowFrames = 0;
@@ -358,6 +363,54 @@ namespace prism {
 		addCPUSpeedLine();
 	}
 
+	// Where the game logic's time went (prism/n3dsperf.h): named parts, or
+	// an address (an actor's update, found in the .elf) when unnamed.
+	typedef struct {
+		const char* mName;
+		const void* mAddress;
+		uint64_t mTicks;
+	} LogicPart;
+	static const int LOGIC_PART_AMOUNT = 48;
+	static LogicPart gLogicParts[LOGIC_PART_AMOUNT];
+	static int gLogicPartAmount;
+
+	uint64_t getN3DSLogicPartTicks() { return svcGetSystemTick(); }
+
+	static void addLogicPart(const char* tName, const void* tAddress, uint64_t tTicks) {
+		for (int i = 0; i < gLogicPartAmount; i++) {
+			if (gLogicParts[i].mName == tName && gLogicParts[i].mAddress == tAddress) {
+				gLogicParts[i].mTicks += tTicks;
+				return;
+			}
+		}
+		if (gLogicPartAmount >= LOGIC_PART_AMOUNT) return;
+		gLogicParts[gLogicPartAmount].mName = tName;
+		gLogicParts[gLogicPartAmount].mAddress = tAddress;
+		gLogicParts[gLogicPartAmount].mTicks = tTicks;
+		gLogicPartAmount++;
+	}
+
+	static void resetLogicParts() { gLogicPartAmount = 0; }
+
+	void addN3DSLogicPartTicks(const char* tName, uint64_t tTicks) { addLogicPart(tName, NULL, tTicks); }
+	void addN3DSLogicPartTicksForAddress(const void* tAddress, uint64_t tTicks) { addLogicPart(NULL, tAddress, tTicks); }
+
+	// The parts taking the most, a frame's milliseconds each; emptied.
+	static void describeLogicParts(uint32_t tFrames, char* oText, size_t tSize) {
+		*oText = '\0';
+		if (!gLogicPartAmount || !tFrames) return;
+		std::sort(gLogicParts, gLogicParts + gLogicPartAmount, [](const LogicPart& a, const LogicPart& b) { return a.mTicks > b.mTicks; });
+		size_t used = 0;
+		used += snprintf(oText + used, tSize - used, " | logic parts:");
+		for (int i = 0; i < gLogicPartAmount && i < 8 && used < tSize; i++) {
+			const double ms = getN3DSPerfMilliseconds(gLogicParts[i].mTicks) / tFrames;
+			if (ms < 0.05) break;
+			if (gLogicParts[i].mName) used += snprintf(oText + used, tSize - used, " %s %.1f ms,", gLogicParts[i].mName, ms);
+			else used += snprintf(oText + used, tSize - used, " %p %.1f ms,", gLogicParts[i].mAddress, ms);
+		}
+		gLogicPartAmount = 0;
+	}
+
 	// Every 10 seconds of a screen (600 frames), how its frames went: what
 	// grows (animations, the heap) shows there.
 	static const uint32_t INTERVAL_FRAMES = 600;
@@ -367,10 +420,12 @@ namespace prism {
 		char parts[300];
 		describeFrameParts(gPerf.mInterval, parts, sizeof(parts));
 		const auto info = mallinfo();
-		addN3DSPerfLine("  at %d s: %s | %d animations | heap %d KB used, linear memory %d KB free, %u textures made while shown, %u let go, %u made again for a palette (%.0f ms)",
+		char logicParts[600];
+		describeLogicParts(gPerf.mInterval.mFrames, logicParts, sizeof(logicParts));
+		addN3DSPerfLine("  at %d s: %s | %d animations | heap %d KB used, linear memory %d KB free, %u textures made while shown, %u let go, %u made again for a palette (%.0f ms)%s",
 			gPerf.mIntervalNumber * 10, parts, getMugenAnimationHandlerLiveAmount(), (int)(info.uordblks / 1024), (int)(linearSpaceFree() / 1024),
 			gN3DSPerf.mLateTextures - gPerf.mShownCounters.mLateTextures, gN3DSPerf.mEvictedTextures - gPerf.mShownCounters.mEvictedTextures,
-			gN3DSPerf.mRepaletted - gPerf.mShownCounters.mRepaletted, getN3DSPerfMilliseconds(gN3DSPerf.mRepalettedTicks - gPerf.mShownCounters.mRepalettedTicks));
+			gN3DSPerf.mRepaletted - gPerf.mShownCounters.mRepaletted, getN3DSPerfMilliseconds(gN3DSPerf.mRepalettedTicks - gPerf.mShownCounters.mRepalettedTicks), logicParts);
 		memset(&gPerf.mInterval, 0, sizeof(gPerf.mInterval));
 	}
 
