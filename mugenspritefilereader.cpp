@@ -886,10 +886,12 @@ static int hasN3DSHeapRoomForSprite(size_t tNeeded) {
 // ones sharing the palette before them).
 static std::vector<uint8_t> gPCXBasePalette;
 static int gIsOnPCXBasePalette;
+static int gPCXSpriteGroup;   // the group of the sprite being loaded
 
 static void resetPCXBasePalette() {
 	gPCXBasePalette.clear();
 	gIsOnPCXBasePalette = 1;
+	gPCXSpriteGroup = -1;
 }
 
 static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int mIsUsingOwnPalette, const Buffer& b, const Vector2D& tAxisOffset) {
@@ -925,8 +927,10 @@ static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int
 		}
 		// A palette of its own that is the file's first one (the character's
 		// colors, repeated) is the character's palette: the .act chosen, as
-		// in MUGEN (CvS characters repeat it in 0,1, then share it).
-		if (!tDst->mPalettes.empty() && !memcmp(insertPalette.mData, gPCXBasePalette.data(), 256 * 3)) {
+		// in MUGEN (CvS characters repeat it in 0,1, then share it). Not the
+		// portraits' (group 9000): drawn for their own colors (CvS Morrigan's
+		// big portrait is the file's first sprite).
+		if (gPCXSpriteGroup != 9000 && !tDst->mPalettes.empty() && !memcmp(insertPalette.mData, gPCXBasePalette.data(), 256 * 3)) {
 			freeBuffer(insertPalette);
 			gIsOnPCXBasePalette = 1;
 		}
@@ -1083,6 +1087,7 @@ static void loadSingleSFFFileAndInsertIntoSpriteFile(const SFFSubFileHeader& sub
 		int isUsingOwnPalette = !subHeader.mHasSamePaletteAsPreviousImage && !isFirstImageWithActiveActFile;
 		if (isFirstImageWithActiveActFile) gIsOnPCXBasePalette = 1;
 		gPreviousGroup = subHeader.mGroup;
+		gPCXSpriteGroup = subHeader.mGroup;
 		texture = loadTextureFromPCXBuffer(tDst, isUsingOwnPalette, pcxBuffer, Vector2D(subHeader.mImageAxisXCoordinate, subHeader.mImageAxisYCoordinate));
 		freeBuffer(pcxBuffer);
 	}
