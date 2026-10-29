@@ -265,9 +265,12 @@ namespace prism {
 	static uint64_t gFrameWaitTicks, gFrameDrawStart;
 	static int gFrameSprites, gFrameBatches;
 
+	// Whether this frame is late (frame pacing, below): not waiting for the screen.
+	static int gIsBehindScreen;
+
 	void startDrawing() {
 		const uint64_t waitStart = getN3DSPerfTicks();
-		C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+		C3D_FrameBegin(gIsBehindScreen ? 0 : C3D_FRAME_SYNCDRAW);
 		gFrameDrawStart = getN3DSPerfTicks();
 		gFrameWaitTicks = gFrameDrawStart - waitStart;
 		gFrameSprites = gFrameBatches = 0;
@@ -521,9 +524,45 @@ namespace prism {
 		gBookkeepingData.mFrameStartTicks = now;
 	}
 
-	bool isSkippingDrawing() { return false; }
+	// ==========================================================================
+	// Frame pacing: the game keeps its 60 frames a second when a frame takes
+	// longer than the screen's 16.7 ms. Each frame's time is counted against
+	// the screen's start; a frame behind it does not wait for the screen
+	// (C3D_FrameBegin waits for the next one even when late: a 20 ms frame
+	// took 33.3), and one over half a frame behind is not drawn (never two
+	// in a row: at least 30 pictures a second). Over 100 ms behind (a
+	// load, a pause), counted from there again rather than hurried after.
+	static const double PACING_FRAME_MS = 1000.0 / 60.0;
+	static uint64_t gPacingStart;
+	static uint32_t gPacingFrames;
+	static int gWasPictureSkipped;
+
+	bool isSkippingDrawing() {
+		const uint64_t now = getN3DSPerfTicks();
+		if (!gPacingStart) {
+			gPacingStart = now;
+			gPacingFrames = 0;
+		}
+		gPacingFrames++;
+		double behind = getN3DSPerfMilliseconds(now - gPacingStart) - gPacingFrames * PACING_FRAME_MS;
+		if (behind > 100) {
+			gPacingStart = now;
+			gPacingFrames = 0;
+			behind = 0;
+		}
+		gIsBehindScreen = behind > 1;
+		const int isSkipping = behind > PACING_FRAME_MS / 2 && !gWasPictureSkipped;
+		gWasPictureSkipped = isSkipping;
+		if (isSkipping) addN3DSPerfSkippedFrame();
+		return isSkipping;
+	}
+
 	void setDrawingFrameSkippingEnabled(bool /*tIsEnabled*/) {}
-	void resetDrawingFrameStartTime() {}
+	void resetDrawingFrameStartTime() {
+		gPacingStart = 0;
+		gWasPictureSkipped = 0;
+		gIsBehindScreen = 0;
+	}
 	void updateDrawingFrameStartTime(float /*tTimeDelta*/) {}
 
 	// ==========================================================================

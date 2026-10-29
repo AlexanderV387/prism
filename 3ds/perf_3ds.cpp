@@ -36,13 +36,15 @@ namespace prism {
 	// waiting for the GPU and the screen; the GPU's own drawing time.
 	typedef struct {
 		uint32_t mFrames;
+		uint32_t mUpdates;   // game frames: the drawn ones and those not drawn to keep up
 		uint64_t mFrameTicks, mWaitTicks, mDrawTicks;
 		double mGPUMilliseconds;
 		uint64_t mSprites, mBatches;
 	} FrameParts;
 
-	static void addFrameParts(FrameParts* tParts, uint64_t tFrameTicks, uint64_t tWaitTicks, uint64_t tDrawTicks, int tSprites, int tBatches) {
+	static void addFrameParts(FrameParts* tParts, uint64_t tFrameTicks, uint64_t tWaitTicks, uint64_t tDrawTicks, int tSprites, int tBatches, uint32_t tUpdates) {
 		tParts->mFrames++;
+		tParts->mUpdates += tUpdates;
 		tParts->mFrameTicks += tFrameTicks;
 		tParts->mWaitTicks += tWaitTicks;
 		tParts->mDrawTicks += tDrawTicks;
@@ -56,8 +58,10 @@ namespace prism {
 		const double frame = getN3DSPerfMilliseconds(tParts.mFrameTicks) / n;
 		const double wait = getN3DSPerfMilliseconds(tParts.mWaitTicks) / n;
 		const double draw = getN3DSPerfMilliseconds(tParts.mDrawTicks) / n;
-		snprintf(oText, tSize, "%.1f ms a frame: game logic %.1f ms, making the drawing %.1f ms, waiting for GPU and screen %.1f ms | GPU drawing %.1f ms | %.0f sprites in %.0f batches",
-			frame, frame - wait - draw, draw, wait, tParts.mGPUMilliseconds / n, tParts.mSprites / n, tParts.mBatches / n);
+		const double updates = tParts.mUpdates ? tParts.mUpdates : n;
+		snprintf(oText, tSize, "%.1f ms a frame: game logic %.1f ms, making the drawing %.1f ms, waiting for GPU and screen %.1f ms | GPU drawing %.1f ms | %.0f sprites in %.0f batches | %.0f%% of game frames drawn, game logic %.1f ms a game frame",
+			frame, frame - wait - draw, draw, wait, tParts.mGPUMilliseconds / n, tParts.mSprites / n, tParts.mBatches / n,
+			100.0 * n / updates, (frame - wait - draw) * n / updates);
 	}
 
 	static struct {
@@ -421,7 +425,7 @@ namespace prism {
 		describeFrameParts(gPerf.mInterval, parts, sizeof(parts));
 		const auto info = mallinfo();
 		char logicParts[600];
-		describeLogicParts(gPerf.mInterval.mFrames, logicParts, sizeof(logicParts));
+		describeLogicParts(gPerf.mInterval.mUpdates, logicParts, sizeof(logicParts));
 		addN3DSPerfLine("  at %d s: %s | %d animations | heap %d KB used, linear memory %d KB free, %u textures made while shown, %u let go, %u made again for a palette (%.0f ms)%s",
 			gPerf.mIntervalNumber * 10, parts, getMugenAnimationHandlerLiveAmount(), (int)(info.uordblks / 1024), (int)(linearSpaceFree() / 1024),
 			gN3DSPerf.mLateTextures - gPerf.mShownCounters.mLateTextures, gN3DSPerf.mEvictedTextures - gPerf.mShownCounters.mEvictedTextures,
@@ -438,19 +442,33 @@ namespace prism {
 		const double frame = getN3DSPerfMilliseconds(gCounterParts.mFrameTicks) / n;
 		const double wait = getN3DSPerfMilliseconds(gCounterParts.mWaitTicks) / n;
 		const double draw = getN3DSPerfMilliseconds(gCounterParts.mDrawTicks) / n;
-		printf("\x1b[1;1H\x1b[0mFPS %4.1f logica %4.1fms dibujo %3.1fms   ", 1000.0 / frame, frame - wait - draw, draw);
+		const double updates = gCounterParts.mUpdates ? gCounterParts.mUpdates : n;
+		const double seconds = getN3DSPerfMilliseconds(gCounterParts.mFrameTicks) / 1000.0;
+		// The pictures shown a second, the game's frames a second (60 is full
+		// speed: the rest of the pictures were left out to keep up), and the
+		// time of a game frame's logic and of a picture's drawing.
+		printf("\x1b[1;1H\x1b[0mFPS %4.1f juego %2.0f/s logica %4.1fms dibujo %3.1fms   ", 1000.0 / frame, updates / seconds, (frame - wait - draw) * n / updates, draw);
 		memset(&gCounterParts, 0, sizeof(gCounterParts));
+	}
+
+	// Game frames whose picture was left out since the last one drawn.
+	static uint32_t gSkippedSinceDrawn;
+
+	void addN3DSPerfSkippedFrame() {
+		gSkippedSinceDrawn++;
 	}
 
 	void addN3DSPerfFrame(uint64_t tWaitTicks, uint64_t tDrawTicks, int tSprites, int tBatches) {
 		const uint64_t now = getN3DSPerfTicks();
+		const uint32_t updates = 1 + gSkippedSinceDrawn;
+		gSkippedSinceDrawn = 0;
 		if (gPerf.mLastFrame && !gPerf.mIsLoading) {
 			const uint64_t t = now - gPerf.mLastFrame;
-			addFrameParts(&gPerf.mParts, t, tWaitTicks, tDrawTicks, tSprites, tBatches);
-			addFrameParts(&gPerf.mInterval, t, tWaitTicks, tDrawTicks, tSprites, tBatches);
-			addFrameParts(&gCounterParts, t, tWaitTicks, tDrawTicks, tSprites, tBatches);
+			addFrameParts(&gPerf.mParts, t, tWaitTicks, tDrawTicks, tSprites, tBatches, updates);
+			addFrameParts(&gPerf.mInterval, t, tWaitTicks, tDrawTicks, tSprites, tBatches, updates);
+			addFrameParts(&gCounterParts, t, tWaitTicks, tDrawTicks, tSprites, tBatches, updates);
 			if (gCounterParts.mFrames >= 30) updateFrameCounter();
-			if (gPerf.mInterval.mFrames >= INTERVAL_FRAMES) writeIntervalLine();
+			if (gPerf.mInterval.mUpdates >= INTERVAL_FRAMES) writeIntervalLine();
 			gPerf.mFrames++;
 			gPerf.mFrameTicks += t;
 			if (t > gPerf.mWorstFrame) gPerf.mWorstFrame = t;

@@ -60,6 +60,8 @@ namespace prism {
 	// GPU and the screen), making the drawing on the CPU, the sprites and
 	// the batches they went in.
 	void addN3DSPerfFrame(uint64_t tWaitTicks, uint64_t tDrawTicks, int tSprites, int tBatches);
+	// A game frame whose picture was left out (drawing_3ds.cpp, to keep up).
+	void addN3DSPerfSkippedFrame();
 
 	// The compatibility log (sdmc:/3ds/dolmexica/compat-log.txt): per
 	// section (a character, a fight), the game's lines and the warnings

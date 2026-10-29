@@ -234,8 +234,25 @@ static void unloadMugenAnimation(MugenAnimationHandlerElement* e) {
 	e->mActiveHitboxes.clear();
 }
 
+// Whether all an animation's elements have a time of 0: in MUGEN (Ikemen:
+// a sprite only for elements with a time) it shows nothing (an AI helper of
+// Psylocke's is "invisible" this way: sprite 0,0 for 0 ticks).
+static int isMugenAnimationWithoutTime(MugenAnimation* tAnimation) {
+	const int amount = vector_size(&tAnimation->mSteps);
+	if (!amount) return 0;
+	for (int i = 0; i < amount; i++) {
+		if (((MugenAnimationStep*)vector_get(&tAnimation->mSteps, i))->mDuration) return 0;
+	}
+	return 1;
+}
+
 static void updateStepSpriteAndSpriteValidity(MugenAnimationHandlerElement* e) {
 	MugenAnimationStep* step = getCurrentAnimationStep(e);
+	if (step && !step->mDuration && isMugenAnimationWithoutTime(e->mAnimation)) {
+		e->mSprite = NULL;
+		e->mHasSprite = 0;
+		return;
+	}
 	e->mSprite = step ? getMugenSpriteFileTextureReference(e->mSprites, step->mGroupNumber, step->mSpriteNumber) : NULL;
 	e->mHasSprite = e->mSprite != NULL;
 }

@@ -162,10 +162,14 @@ namespace prism {
 
 	static void applyChannelMix(int tChannel) {
 		const float volume = gN3DSSoundEffectData.mChannelVolume[tChannel];
-		const float panning = gN3DSSoundEffectData.mChannelPanning[tChannel]; // 0 left, 0.5 center, 1 right
+		// -1 left, 0 center, 1 right (as prism's other backends: SoLoud's
+		// pan); the far side kept at half at most, the 3DS's speakers being
+		// that close together (the far side silent sounded lopsided).
+		const float panning = gN3DSSoundEffectData.mChannelPanning[tChannel];
+		static const float PANNING_WIDTH = 0.5f;
 		float mix[12] = { 0 };
-		mix[0] = volume * std::min(1.0f, 2 * (1 - panning));
-		mix[1] = volume * std::min(1.0f, 2 * panning);
+		mix[0] = volume * std::min(1.0f, 1 - panning * PANNING_WIDTH);
+		mix[1] = volume * std::min(1.0f, 1 + panning * PANNING_WIDTH);
 		ndspChnSetMix(toDSPChannel(tChannel), mix);
 	}
 
@@ -201,7 +205,7 @@ namespace prism {
 		ndspChnSetFormat(dsp, e.mChannelAmount == 2 ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
 
 		gN3DSSoundEffectData.mChannelVolume[tChannel] = tVolume;
-		gN3DSSoundEffectData.mChannelPanning[tChannel] = 0.5f;
+		gN3DSSoundEffectData.mChannelPanning[tChannel] = 0;
 		applyChannelMix(tChannel);
 
 		ndspWaveBuf* buf = &gN3DSSoundEffectData.mWaveBufs[tChannel];
@@ -236,7 +240,7 @@ namespace prism {
 
 	void panSoundEffect(int tChannel, float tPanning) {
 		if (!gN3DSSoundEffectData.mIsAvailable || tChannel < 1 || tChannel >= CHANNEL_AMOUNT) return;
-		gN3DSSoundEffectData.mChannelPanning[tChannel] = std::min(std::max(tPanning, 0.0f), 1.0f);
+		gN3DSSoundEffectData.mChannelPanning[tChannel] = std::min(std::max(tPanning, -1.0f), 1.0f);
 		applyChannelMix(tChannel);
 	}
 
