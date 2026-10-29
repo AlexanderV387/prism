@@ -6,12 +6,30 @@
 namespace prism {
 
 	void initInput() {}
-	void updateInputPlatform() {}
+
+	// For tests: PRISM_LINUX_PULSE presses buttons for player 1 one frame in
+	// a given number ("x:20": x every 20 frames).
+	static unsigned int gFrame;
+	void updateInputPlatform() { gFrame++; }
+
+	static int isPulsed(const char* tButton) {
+		static const char* pulse = getenv("PRISM_LINUX_PULSE");
+		if (!pulse) return 0;
+		const char* colon = strchr(pulse, ':');
+		const int period = colon ? atoi(colon + 1) : 0;
+		if (period <= 0 || gFrame % period) return 0;
+		char list[256];
+		snprintf(list, sizeof(list), ",%.*s,", (int)(colon - pulse), pulse);
+		char wanted[32];
+		snprintf(wanted, sizeof(wanted), ",%s,", tButton);
+		return strstr(list, wanted) != NULL;
+	}
 
 	// For tests: PRISM_LINUX_HOLD lists the buttons player 1 holds
 	// ("up", "a,left"...).
 	static int isHeld(int i, const char* tButton) {
 		if (i) return 0;
+		if (isPulsed(tButton)) return 1;
 		static const char* held = getenv("PRISM_LINUX_HOLD");
 		if (!held) return 0;
 		char list[256];
@@ -42,7 +60,7 @@ namespace prism {
 	int hasShotGunSingle(int /*i*/) { return 0; }
 	Vector3D getShotPositionSingle(int /*i*/) { return Vector3D(0, 0, 0); }
 
-	int isUsingControllerSingle(int i) { return !i && getenv("PRISM_LINUX_HOLD"); }
+	int isUsingControllerSingle(int i) { return !i && (getenv("PRISM_LINUX_HOLD") || getenv("PRISM_LINUX_PULSE")); }
 	void addControllerRumbleSingle(int /*i*/, Duration /*tDuration*/, int /*tFrequency*/, float /*tAmplitude*/) {}
 	void turnControllerRumbleOffSingle(int /*i*/) {}
 

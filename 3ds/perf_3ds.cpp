@@ -322,11 +322,25 @@ namespace prism {
 		}
 	}
 
+	// The CPU's speed: a loop of 50 million steps (one subtract and branch
+	// each) timed; the New 3DS's 804 MHz mode does it about three times
+	// faster than the 268 MHz one.
+	static void addCPUSpeedLine() {
+		bool isNew3DS = false;
+		APT_CheckNew3DS(&isNew3DS);
+		const uint64_t start = getN3DSPerfTicks();
+		uint32_t steps = 50000000;
+		asm volatile("1: subs %0, %0, #1\n\tbne 1b" : "+r"(steps) : : "cc");
+		const double ms = getN3DSPerfMilliseconds(getN3DSPerfTicks() - start);
+		addN3DSPerfLine("CPU: %s, a loop of 50 million steps in %.0f ms (%.0f million steps a second)", isNew3DS ? "New 3DS" : "Old 3DS", ms, 50000.0 / ms);
+	}
+
 	void initN3DSPerf() {
 		gPerf.mStart = getN3DSPerfTicks();
 		gPerf.mFile = fopen(N3DS_PERF_FILE, "w");
 		setLogCallback(logCallback, NULL);
 		addN3DSPerfLine("load-time log: time in ms since the start, then what happened");
+		addCPUSpeedLine();
 	}
 
 	// Every 10 seconds of a screen (600 frames), how its frames went: what
@@ -345,12 +359,27 @@ namespace prism {
 		memset(&gPerf.mInterval, 0, sizeof(gPerf.mInterval));
 	}
 
+	// The frame counter on the bottom screen (its first line), every half
+	// second: frames a second, and where a frame's time went.
+	static FrameParts gCounterParts;
+
+	static void updateFrameCounter() {
+		const double n = gCounterParts.mFrames;
+		const double frame = getN3DSPerfMilliseconds(gCounterParts.mFrameTicks) / n;
+		const double wait = getN3DSPerfMilliseconds(gCounterParts.mWaitTicks) / n;
+		const double draw = getN3DSPerfMilliseconds(gCounterParts.mDrawTicks) / n;
+		printf("\x1b[1;1H\x1b[0mFPS %4.1f logica %4.1fms dibujo %3.1fms   ", 1000.0 / frame, frame - wait - draw, draw);
+		memset(&gCounterParts, 0, sizeof(gCounterParts));
+	}
+
 	void addN3DSPerfFrame(uint64_t tWaitTicks, uint64_t tDrawTicks, int tSprites, int tBatches) {
 		const uint64_t now = getN3DSPerfTicks();
 		if (gPerf.mLastFrame && !gPerf.mIsLoading) {
 			const uint64_t t = now - gPerf.mLastFrame;
 			addFrameParts(&gPerf.mParts, t, tWaitTicks, tDrawTicks, tSprites, tBatches);
 			addFrameParts(&gPerf.mInterval, t, tWaitTicks, tDrawTicks, tSprites, tBatches);
+			addFrameParts(&gCounterParts, t, tWaitTicks, tDrawTicks, tSprites, tBatches);
+			if (gCounterParts.mFrames >= 30) updateFrameCounter();
 			if (gPerf.mInterval.mFrames >= INTERVAL_FRAMES) writeIntervalLine();
 			gPerf.mFrames++;
 			gPerf.mFrameTicks += t;
