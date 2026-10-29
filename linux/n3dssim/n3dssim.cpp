@@ -53,7 +53,9 @@ void C3D_TexDelete(C3D_Tex* tex) {
 	if (getenv("N3DS_SIM_TRACE_DELETES") && traced < atoi(getenv("N3DS_SIM_TRACE_DELETES"))) {
 		traced++;
 		fprintf(stderr, "n3dssim: C3D_TexDelete %zu bytes from:\n", tex->size);
+#if defined(__SANITIZE_ADDRESS__)
 		__sanitizer_print_stack_trace();
+#endif
 	}
 	gLinearUsed -= tex->size;
 	free(tex->data);

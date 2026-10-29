@@ -380,23 +380,18 @@ static Buffer decodeRLE5BufferAndReturnOwnedBuffer(const Buffer& b, int tFinalSi
 	int op = 0;
 	for (ip = 0; ip < (int)b.mLength && op < tFinalSize; ip++) {
 		uint8_t cur = input[ip];
-	
+
 		if ((cur & 0xC0) == 0xC0) { // decode
 			int steps = cur & 0x3F;
 			ip++;
 			if (ip >= (int)b.mLength) break;
-			uint8_t val = input[ip];
-			int k;
-			
-			for (k = 0; k < steps && op < tFinalSize; k++) {
-				output[op++] = val;
-			}
+			const int amount = min(steps, tFinalSize - op);
+			memset(output + op, input[ip], amount);
+			op += amount;
 		}
 		else {
 			output[op++] = cur;
 		}
-
-		
 	}
 
 	return makeBufferOwned(output, tFinalSize);

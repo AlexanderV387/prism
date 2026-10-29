@@ -14,8 +14,10 @@
 
 // [3DS] Sound effects on the DSP (ndsp, which needs /3ds/dspfirm.cdc: without
 // it the game is silent). The WAVs are kept as 16-bit PCM in linear memory,
-// where the DSP reads them; prism's channels 1 to 15 are the DSP's 0 to 14
-// (the others are left for music).
+// where the DSP reads them; prism's channels 1 to 23 are the DSP's 0 to 22
+// (24, the DSP's 23, is the music's). Sounds on any channel take the free
+// ones from the top, leaving the low ones to sounds on a given channel (a
+// character's voice).
 
 namespace prism {
 
@@ -26,7 +28,7 @@ namespace prism {
 		u32 mRate;
 	} N3DSSoundEffect;
 
-	static const int CHANNEL_AMOUNT = 16;
+	static const int CHANNEL_AMOUNT = 24;
 
 	static struct {
 		int mIsAvailable;
@@ -173,7 +175,7 @@ namespace prism {
 	}
 
 	static int findEmptyChannel() {
-		for (int i = 1; i < CHANNEL_AMOUNT; i++) {
+		for (int i = CHANNEL_AMOUNT - 1; i >= 1; i--) {
 			if (!isSoundEffectPlayingOnChannel(i)) return i;
 		}
 		return -1;

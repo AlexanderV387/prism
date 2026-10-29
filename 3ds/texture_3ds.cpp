@@ -272,31 +272,45 @@ namespace prism {
 	// Runs: a byte n < 128, then n + 1 bytes as they are; a byte n >= 128,
 	// then one byte n - 127 times.
 	static unsigned char* compressIndices(const unsigned char* tSource, int tSize, int* oCompressedSize) {
+		// At most one byte more for each 128 (literals all the way).
 		std::vector<unsigned char>& out = gIndexScratch;
-		out.clear();
+		out.resize((size_t)tSize + tSize / 128 + 2);
+		unsigned char* o = out.data();
 		int i = 0;
 		while (i < tSize) {
+			const unsigned char value = tSource[i];
+			const int runEnd = std::min(tSize, i + 128);
 			int run = 1;
-			while (i + run < tSize && run < 128 && tSource[i + run] == tSource[i]) run++;
+			// Four at a time first (most of a sprite is runs of color 0).
+			const uint32_t four = value * 0x01010101u;
+			while (i + run + 4 <= runEnd) {
+				uint32_t next;
+				memcpy(&next, tSource + i + run, 4);
+				if (next != four) break;
+				run += 4;
+			}
+			while (i + run < runEnd && tSource[i + run] == value) run++;
 			if (run >= 3) {
-				out.push_back((unsigned char)(0x80 | (run - 1)));
-				out.push_back(tSource[i]);
+				*o++ = (unsigned char)(0x80 | (run - 1));
+				*o++ = value;
 				i += run;
 				continue;
 			}
 			const int literalStart = i;
-			int length = 0;
-			while (i < tSize && length < 128) {
+			const int literalEnd = runEnd;
+			while (i < literalEnd) {
 				if (i + 2 < tSize && tSource[i] == tSource[i + 1] && tSource[i] == tSource[i + 2]) break;
 				i++;
-				length++;
 			}
-			out.push_back((unsigned char)(length - 1));
-			out.insert(out.end(), tSource + literalStart, tSource + literalStart + length);
+			const int length = i - literalStart;
+			*o++ = (unsigned char)(length - 1);
+			memcpy(o, tSource + literalStart, length);
+			o += length;
 		}
-		unsigned char* ret = (unsigned char*)malloc(out.size());
-		if (ret) memcpy(ret, out.data(), out.size());
-		*oCompressedSize = (int)out.size();
+		const size_t size = o - out.data();
+		unsigned char* ret = (unsigned char*)malloc(size);
+		if (ret) memcpy(ret, out.data(), size);
+		*oCompressedSize = (int)size;
 		return ret;
 	}
 
@@ -364,6 +378,41 @@ namespace prism {
 
 	static TextureData loadPalettedTextureFrom8BitBufferWithOwnPalette(const Buffer& b, int tPaletteID, int tWidth, int tHeight, int tOwnPalette);
 
+	// A paletted texture's texels from its indices, with its palette as it
+	// is now; eight texels (a tile's row) at a time.
+	static void fillPalettedTexels(const TextureData& tTexture, const unsigned char* tIndices) {
+		Texture texture = (Texture)tTexture.mTexture->mData;
+		C3D_Tex* tex = &texture->mTex;
+		u16* dst = (u16*)tex->data;
+		u16 palette[256];
+		getN3DSTexturePalette(tTexture, palette);
+		const int w = clampedWidth(tTexture.mTextureSize.x), h = clampedWidth(tTexture.mTextureSize.y);
+		const int fullBlocks = w >> 3;
+
+		for (int y = 0; y < h; y++) {
+			const TexelRow row = texelRow(y, tex);
+			const unsigned char* line = tIndices + y * tTexture.mTextureSize.x;
+			u16* block = dst + row.mBase;
+			const u8* order = row.mOrder;
+			for (int b = 0; b < fullBlocks; b++, block += 64, line += 8) {
+				block[order[0]] = palette[line[0]];
+				block[order[1]] = palette[line[1]];
+				block[order[2]] = palette[line[2]];
+				block[order[3]] = palette[line[3]];
+				block[order[4]] = palette[line[4]];
+				block[order[5]] = palette[line[5]];
+				block[order[6]] = palette[line[6]];
+				block[order[7]] = palette[line[7]];
+			}
+			for (int x = 0; x < (w & 7); x++) {
+				block[order[x]] = palette[line[x]];
+			}
+		}
+
+		C3D_TexFlush(tex);
+		texture->mPaletteVersion = getPaletteVersion(tTexture);
+	}
+
 	TextureData loadN3DSTextureWithOwnPalette(const Buffer& b, const u32* tRGBAPalette, int tWidth, int tHeight) {
 		u16 colors[256];
 		for (int i = 0; i < 256; i++) colors[i] = toRGBA5551(tRGBAPalette[i]);
@@ -399,8 +448,12 @@ namespace prism {
 
 		// Converted now with the palette as it is (usually already set), not
 		// in the first frame it is drawn; again later if the palette changes.
+		// From the indices at hand, not the ones just compressed.
 		if (makePalettedTexels(texture, tWidth, tHeight, 0)) {
-			prepareN3DSTexture(ret);
+			const uint64_t start = getN3DSPerfTicks();
+			texture->mLastUsedFrame = gN3DSTextureFrame;
+			fillPalettedTexels(ret, (const unsigned char*)b.mData);
+			countTexture(start, clampedWidth(tWidth), clampedWidth(tHeight));
 		}
 		else {
 			gN3DSPerf.mDeferredTextures++;
@@ -424,28 +477,11 @@ namespace prism {
 			gN3DSPerf.mLateTextures++;
 			isMadeLate = 1;
 		}
-		const int version = getPaletteVersion(tTexture);
-		if (texture->mPaletteVersion == version) return;
+		if (texture->mPaletteVersion == getPaletteVersion(tTexture)) return;
 		const int isRepaletted = !isMadeLate && texture->mPaletteVersion != -1;
 
-		C3D_Tex* tex = &texture->mTex;
-		u16* dst = (u16*)tex->data;
-		u16 palette[256];
-		getN3DSTexturePalette(tTexture, palette);
-		const int w = clampedWidth(tTexture.mTextureSize.x), h = clampedWidth(tTexture.mTextureSize.y);
-		const unsigned char* indices = decompressIndices(texture, tTexture.mTextureSize.x * tTexture.mTextureSize.y);
-
-		for (int y = 0; y < h; y++) {
-			const TexelRow row = texelRow(y, tex);
-			const unsigned char* line = indices + y * tTexture.mTextureSize.x;
-			for (int x = 0; x < w; x++) {
-				dst[texelOffset(row, x)] = palette[line[x]];
-			}
-		}
-
-		C3D_TexFlush(tex);
-		texture->mPaletteVersion = version;
-		countTexture(start, w, h);
+		fillPalettedTexels(tTexture, decompressIndices(texture, tTexture.mTextureSize.x * tTexture.mTextureSize.y));
+		countTexture(start, clampedWidth(tTexture.mTextureSize.x), clampedWidth(tTexture.mTextureSize.y));
 		if (isMadeLate) gN3DSPerf.mLateTextureTicks += getN3DSPerfTicks() - start;
 		else if (isRepaletted) {
 			gN3DSPerf.mRepaletted++;

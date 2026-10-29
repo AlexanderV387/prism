@@ -782,9 +782,13 @@ void string_map_map(StringMap* tMap, stringMapMapCB tCB, void* tCaller) {
 	StringMapCaller caller;
 	caller.mCaller = tCaller;
 	caller.mCB = tCB;
+	// Only as far as the entries go (an empty map, often gone through in
+	// fights, was 211 buckets each time).
+	int left = tMap->mSize;
 	int i;
-	for (i = 0; i < MAP_MODULO; i++) {
+	for (i = 0; i < MAP_MODULO && left > 0; i++) {
 		StringMapBucket* bucket = &((StringMapBucket*)tMap->mBuckets)[i];
+		left -= list_size(&bucket->mEntries);
 		string_map_map_single_bucket(&caller, bucket);
 	}
 }
@@ -895,9 +899,13 @@ void int_map_map(IntMap* tMap, mapCB tCB, void* tCaller) {
 	IntMapCaller caller;
 	caller.mCaller = tCaller;
 	caller.mCB = tCB;
+	// Only as far as the entries go (an empty map, often gone through in
+	// fights, was 211 buckets each time).
+	int left = tMap->mSize;
 	int i;
-	for (i = 0; i < MAP_MODULO; i++) {
+	for (i = 0; i < MAP_MODULO && left > 0; i++) {
 		StringMapBucket* bucket = &((StringMapBucket*)tMap->mBuckets)[i];
+		left -= list_size(&bucket->mEntries);
 		int_map_map_single_bucket(&caller, bucket);
 	}
 }

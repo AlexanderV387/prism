@@ -57,3 +57,5 @@ build_linux/
 # Build output of Makefile.n3dssim (the 3DS texture simulation)
 build_n3dssim/
 bin_n3dssim/
+build_n3dssim_fast/
+bin_n3dssim_fast/

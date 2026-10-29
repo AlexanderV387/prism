@@ -323,16 +323,31 @@ namespace prism {
 	}
 
 	// The CPU's speed: a loop of 50 million steps (one subtract and branch
-	// each) timed; the New 3DS's 804 MHz mode does it about three times
-	// faster than the 268 MHz one.
-	static void addCPUSpeedLine() {
-		bool isNew3DS = false;
-		APT_CheckNew3DS(&isNew3DS);
+	// each) timed in the 268 MHz mode and in the New 3DS's 804 MHz one (with
+	// its L2 cache), as ptm:sysm answers asking for each; left in the fast one.
+	static double timeCPULoop() {
 		const uint64_t start = getN3DSPerfTicks();
 		uint32_t steps = 50000000;
 		asm volatile("1: subs %0, %0, #1\n\tbne 1b" : "+r"(steps) : : "cc");
-		const double ms = getN3DSPerfMilliseconds(getN3DSPerfTicks() - start);
-		addN3DSPerfLine("CPU: %s, a loop of 50 million steps in %.0f ms (%.0f million steps a second)", isNew3DS ? "New 3DS" : "Old 3DS", ms, 50000.0 / ms);
+		return getN3DSPerfMilliseconds(getN3DSPerfTicks() - start);
+	}
+
+	static void addCPUSpeedLine() {
+		bool isNew3DS = false;
+		APT_CheckNew3DS(&isNew3DS);
+		const double asStarted = timeCPULoop();
+		const Result initResult = ptmSysmInit();
+		if (R_FAILED(initResult)) {
+			addN3DSPerfLine("CPU: %s, loop of 50 million steps %.0f ms; ptm:sysm not available (0x%08lX): the fast mode cannot be asked for", isNew3DS ? "New 3DS" : "Old 3DS", asStarted, (unsigned long)initResult);
+			return;
+		}
+		const Result slowResult = PTMSYSM_ConfigureNew3DSCPU(0);
+		const double slow = timeCPULoop();
+		const Result fastResult = PTMSYSM_ConfigureNew3DSCPU(3);
+		const double fast = timeCPULoop();
+		ptmSysmExit();
+		addN3DSPerfLine("CPU: %s, loop of 50 million steps: %.0f ms as started, %.0f ms in the slow mode (0x%08lX), %.0f ms in the fast mode (0x%08lX)",
+			isNew3DS ? "New 3DS" : "Old 3DS", asStarted, slow, (unsigned long)slowResult, fast, (unsigned long)fastResult);
 	}
 
 	void initN3DSPerf() {
