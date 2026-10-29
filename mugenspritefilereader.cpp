@@ -1413,7 +1413,9 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 
 	MugenSpriteFileSprite e;
 #ifdef __3DS__
-	if ((isPaletted || isRawPNG) && !hasN3DSHeapRoomForSprite((size_t)sprite.mWidth * sprite.mHeight * (sprite.mColorDepth > 8 ? 8 : 3) + sprite.mDataLength)) {
+	// A PNG is decoded to 32 bits and copied once more in pieces (twice its
+	// pixels in 4 bytes), whatever its depth; the others, its 8-bit pixels.
+	if ((isPaletted || isRawPNG) && !hasN3DSHeapRoomForSprite((size_t)sprite.mWidth * sprite.mHeight * (isRawPNG ? 8 : 3) + sprite.mDataLength)) {
 		e = makeMugenSpriteFileSprite(std::vector<MugenSpriteFileSubSprite>(), makeTextureSize(sprite.mWidth, sprite.mHeight), Vector2D(sprite.mAxisX, sprite.mAxisY));
 	}
 	else
