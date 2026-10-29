@@ -54,6 +54,7 @@ namespace prism {
 	static struct {
 		std::vector<CompatSection> mSections;
 		int mCurrent = -1;
+		int mIsDirty;
 	} gCompat;
 
 	uint64_t getN3DSPerfTicks() { return svcGetSystemTick(); }
@@ -134,6 +135,7 @@ namespace prism {
 	// The compatibility log.
 
 	static void writeCompatLog() {
+		gCompat.mIsDirty = 0;
 		FILE* file = fopen(N3DS_COMPAT_FILE, "w");
 		if (!file) return;
 		fputs("compatibility log: per character and fight, what the game said and the warnings meanwhile (each once, with how often)\n", file);
@@ -147,10 +149,12 @@ namespace prism {
 		fclose(file);
 	}
 
-	static int findCompatSection(const char* tName) {
+	static int findCompatSection(const char* tName, int* oIsNew = NULL) {
+		if (oIsNew) *oIsNew = 0;
 		for (size_t i = 0; i < gCompat.mSections.size(); i++) {
 			if (gCompat.mSections[i].mName == tName) return (int)i;
 		}
+		if (oIsNew) *oIsNew = 1;
 		CompatSection section;
 		section.mName = tName;
 		section.mDroppedWarnings = 0;
@@ -159,10 +163,13 @@ namespace prism {
 	}
 
 	void beginN3DSCompatSection(const char* tName) {
-		gCompat.mCurrent = findCompatSection(tName);
+		int isNew;
+		gCompat.mCurrent = findCompatSection(tName, &isNew);
+		if (!isNew) return;
 		gCompat.mSections[gCompat.mCurrent].mLines.push_back("(loading...)");
 		writeCompatLog();
 		gCompat.mSections[gCompat.mCurrent].mLines.pop_back();
+		gCompat.mIsDirty = 1;
 	}
 
 	void addN3DSCompatLine(const char* tFormat, ...) {
@@ -175,13 +182,13 @@ namespace prism {
 		auto& lines = gCompat.mSections[gCompat.mCurrent].mLines;
 		lines.push_back(line);
 		if (lines.size() > 12) lines.erase(lines.begin());   // a character in many fights
+		gCompat.mIsDirty = 1;
 	}
 
 	int getN3DSHeapUsedKB() { return (int)(mallinfo().uordblks / 1024); }
 	int getN3DSLinearFreeKB() { return (int)(linearSpaceFree() / 1024); }
 
 	void endN3DSCompatSection() {
-		writeCompatLog();
 		gCompat.mCurrent = -1;
 	}
 
@@ -191,6 +198,7 @@ namespace prism {
 		std::string text = tEntry.mText;
 		while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
 		if (tEntry.mType == LOG_TYPE_ERROR) text = "ERROR " + text;
+		gCompat.mIsDirty = 1;
 		const auto it = section.mWarningIndices.find(text);
 		if (it != section.mWarningIndices.end()) {
 			section.mWarnings[it->second].second++;
@@ -226,7 +234,7 @@ namespace prism {
 
 		if (strstr(text, "Show screen")) {
 			endLoad();
-			if (gCompat.mCurrent >= 0) writeCompatLog();
+			if (gCompat.mIsDirty) writeCompatLog();
 		}
 	}
 

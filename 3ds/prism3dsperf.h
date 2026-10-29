@@ -49,8 +49,10 @@ namespace prism {
 
 	// The compatibility log (sdmc:/3ds/dolmexica/compat-log.txt): per
 	// section (a character, a fight), the game's lines and the warnings
-	// logged meanwhile, each once with how often. Written whenever a section
-	// begins or ends, so a crash leaves what was loading.
+	// logged meanwhile, each once with how often. Written when a section
+	// begins for the first time (a crash leaves what was loading), when a new
+	// warning comes outside a load and after each load (each costs some
+	// 25 ms on the SD card).
 	void beginN3DSCompatSection(const char* tName);
 	void addN3DSCompatLine(const char* tFormat, ...);
 	void endN3DSCompatSection();
