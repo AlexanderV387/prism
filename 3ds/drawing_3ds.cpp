@@ -103,6 +103,9 @@ namespace prism {
 		Vector3D mScreenOffset;
 
 		int mIsFrameStarted;
+
+		// A white texture, for the background color's rectangle.
+		C3D_Tex mWhite;
 	} gN3DSDrawingData;
 
 	static struct {
@@ -163,6 +166,10 @@ namespace prism {
 		// The top screen's pixels, x to the right and y down.
 		Mtx_OrthoTilt(&gN3DSDrawingData.mProjection, 0.0f, TOP_WIDTH, TOP_HEIGHT, 0.0f, 0.0f, 1.0f, true);
 
+		C3D_TexInit(&gN3DSDrawingData.mWhite, 8, 8, GPU_RGBA8);
+		memset(gN3DSDrawingData.mWhite.data, 0xFF, gN3DSDrawingData.mWhite.size);
+		C3D_TexFlush(&gN3DSDrawingData.mWhite);
+
 		C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
 		C3D_CullFace(GPU_CULL_NONE);
 		for (int i = 0; i < 4; i++) gN3DSPaletteVersions[i] = 0;
@@ -178,6 +185,7 @@ namespace prism {
 		if (!gN3DSDrawingData.mTop) return;
 		if (gN3DSDrawingData.mIsFrameStarted) C3D_FrameEnd(0);
 		C3D_RenderTargetDelete(gN3DSDrawingData.mTop);
+		C3D_TexDelete(&gN3DSDrawingData.mWhite);
 		gN3DSDrawingData.mTop = NULL;
 		shaderProgramFree(&gN3DSDrawingData.mShader);
 		DVLB_Free(gN3DSDrawingData.mShaderDVLB);
@@ -244,8 +252,15 @@ namespace prism {
 	void startDrawing() {
 		C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
 		gN3DSDrawingData.mIsFrameStarted = 1;
-		C3D_RenderTargetClear(gN3DSDrawingData.mTop, C3D_CLEAR_ALL, gN3DSClearColor, 0);
+		// Black around the game's screen (as the PC's window, which is just
+		// its size): its background color and sprites only inside it.
+		C3D_RenderTargetClear(gN3DSDrawingData.mTop, C3D_CLEAR_ALL, 0x000000FF, 0);
 		C3D_FrameDrawOn(gN3DSDrawingData.mTop);
+		const ScreenSize sz = getScreenSize();
+		const int gameX = (int)gN3DSDrawingData.mScreenOffset.x, gameY = (int)gN3DSDrawingData.mScreenOffset.y;
+		const int gameW = (int)(sz.x * gN3DSDrawingData.mScreenScale.x), gameH = (int)(sz.y * gN3DSDrawingData.mScreenScale.y);
+		// (The target is the screen turned on its side.)
+		C3D_SetScissor(GPU_SCISSOR_NORMAL, TOP_HEIGHT - (gameY + gameH), TOP_WIDTH - (gameX + gameW), TOP_HEIGHT - gameY, TOP_WIDTH - gameX);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, gN3DSDrawingData.mProjectionLocation, &gN3DSDrawingData.mProjection);
 		gN3DSDrawingData.mVertexAmount = 0;
 		gDrawList.clear();
@@ -406,12 +421,46 @@ namespace prism {
 		gN3DSDrawingData.mVertexAmount += 6;
 	}
 
+	// The background color, over the game's screen (the rest stays black).
+	static void drawBackgroundColor() {
+		if (gN3DSClearColor == 0x000000FF) return;
+
+		DrawState state;
+		memset(&state, 0, sizeof(state));
+		state.mTex = &gN3DSDrawingData.mWhite;
+		state.mBlendType = BLEND_TYPE_NORMAL;
+		state.mIsColorSolid = 1;
+		state.mDestAlpha = 255;
+		applyDrawState(state);
+
+		const ScreenSize sz = getScreenSize();
+		const float x0 = gN3DSDrawingData.mScreenOffset.x, y0 = gN3DSDrawingData.mScreenOffset.y;
+		const float x1 = x0 + sz.x * gN3DSDrawingData.mScreenScale.x, y1 = y0 + sz.y * gN3DSDrawingData.mScreenScale.y;
+		const float r = (gN3DSClearColor >> 24) / 255.0f, g = ((gN3DSClearColor >> 16) & 0xFF) / 255.0f, b = ((gN3DSClearColor >> 8) & 0xFF) / 255.0f;
+		const float corners[6][2] = { { x0, y0 }, { x0, y1 }, { x1, y0 }, { x1, y0 }, { x0, y1 }, { x1, y1 } };
+
+		Vertex* v = gN3DSDrawingData.mVertices + gN3DSDrawingData.mVertexAmount;
+		for (int i = 0; i < 6; i++) {
+			v[i].x = corners[i][0];
+			v[i].y = corners[i][1];
+			v[i].z = 0.5f;
+			v[i].u = v[i].v = 0;
+			v[i].r = r;
+			v[i].g = g;
+			v[i].b = b;
+			v[i].a = 1;
+		}
+		gN3DSDrawingData.mVertexAmount += 6;
+		flushBatch();
+	}
+
 	void stopDrawing() {
 		if (!gN3DSDrawingData.mIsFrameStarted) return;
 
 		gBatchStart = gN3DSDrawingData.mVertexAmount;
 		DrawState state;
 		int hasState = 0;
+		drawBackgroundColor();
 		for (const auto& e : gDrawList) {
 			drawSortedSprite(e, &state, &hasState);
 		}
