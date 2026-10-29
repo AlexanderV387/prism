@@ -389,6 +389,7 @@ namespace prism {
 
 		prepareN3DSTexture(e.mTexture);
 		Texture texture = (Texture)e.mTexture.mTexture->mData;
+		if (!texture->mIsInitialized) return;   // left out for want of memory
 
 		DrawState state;
 		state.mTex = &texture->mTex;

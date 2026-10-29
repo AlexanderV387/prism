@@ -66,7 +66,9 @@ namespace prism {
 		return ret;
 	}
 
-	// A new texture of the image's size, its texels cleared.
+	// A new texture of the image's size, its texels cleared. Without the
+	// memory for it, one that is never drawn (and a warning, counted in the
+	// compatibility log): the game goes on, short of that sprite.
 	static TextureData makeTexture(int tWidth, int tHeight, GPU_TEXCOLOR tFormat) {
 		TextureData ret;
 		ret.mTextureSize.x = tWidth;
@@ -81,8 +83,9 @@ namespace prism {
 
 		Texture texture = (Texture)ret.mTexture->mData;
 		if (!C3D_TexInit(&texture->mTex, powerOfTwoAtLeast(tWidth), powerOfTwoAtLeast(tHeight), tFormat)) {
-			logErrorFormat("Out of memory for a texture of %dx%d (linear memory free: %d).", tWidth, tHeight, (int)linearSpaceFree());
-			abortSystem();
+			logWarning("Out of texture (linear) memory: a sprite left out.");
+			texture->mIsInitialized = 0;
+			return ret;
 		}
 		texture->mIsInitialized = 1;
 		C3D_TexSetFilter(&texture->mTex, GPU_NEAREST, GPU_NEAREST);
@@ -104,6 +107,7 @@ namespace prism {
 	TextureData loadTextureFromARGB32Buffer(const Buffer& b, int tWidth, int tHeight) {
 		const uint64_t start = getN3DSPerfTicks();
 		TextureData ret = makeTexture(tWidth, tHeight, GPU_RGBA8);
+		if (!((Texture)ret.mTexture->mData)->mIsInitialized) return ret;
 		C3D_Tex* tex = &((Texture)ret.mTexture->mData)->mTex;
 		u32* dst = (u32*)tex->data;
 		const u32* src = (const u32*)b.mData;
@@ -126,6 +130,7 @@ namespace prism {
 	TextureData loadTextureFromARGB16Buffer(const Buffer& b, int tWidth, int tHeight) {
 		const uint64_t start = getN3DSPerfTicks();
 		TextureData ret = makeTexture(tWidth, tHeight, GPU_RGBA4);
+		if (!((Texture)ret.mTexture->mData)->mIsInitialized) return ret;
 		C3D_Tex* tex = &((Texture)ret.mTexture->mData)->mTex;
 		u16* dst = (u16*)tex->data;
 		const u16* src = (const u16*)b.mData;
@@ -176,7 +181,14 @@ namespace prism {
 		ret.mPaletteID = tPaletteID;
 
 		Texture texture = (Texture)ret.mTexture->mData;
+		if (!texture->mIsInitialized) return ret;
 		texture->mIndexed = (unsigned char*)malloc(tWidth * tHeight);
+		if (!texture->mIndexed) {
+			logWarning("Out of heap memory: a sprite's palette indices left out.");
+			C3D_TexDelete(&texture->mTex);
+			texture->mIsInitialized = 0;
+			return ret;
+		}
 		memcpy(texture->mIndexed, b.mData, tWidth * tHeight);
 		texture->mPaletteVersion = -1;
 
@@ -190,6 +202,7 @@ namespace prism {
 		if (!tTexture.mHasPalette) return;
 
 		Texture texture = (Texture)tTexture.mTexture->mData;
+		if (!texture->mIsInitialized) return;
 		const int id = tTexture.mPaletteID & 3;
 		if (texture->mPaletteVersion == gN3DSPaletteVersions[id]) return;
 

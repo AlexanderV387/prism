@@ -896,6 +896,71 @@ static int gPreviousGroup;
 
 static int gLoadedSubFileAmount;
 
+#ifdef __3DS__
+// [3DS] Where each sprite file's portraits are (the select screen's two
+// sprites per character), found once by going through the file and kept in
+// the game's folder: then read straight from there, without the rest of the
+// file (a 13 MB file took 1.2 s). SFF v1: the subfiles' offsets; SFF v2: the
+// sprites' indices. A file of another size, or offsets that no longer lead to
+// portraits, goes through the file again.
+#ifndef N3DS_PORTRAIT_CACHE_FILE
+#define N3DS_PORTRAIT_CACHE_FILE "sdmc:/3ds/dolmexica/portrait-cache.txt"
+#endif
+
+static struct {
+	int mIsLoaded;
+	std::map<std::string, std::vector<uint32_t>> mEntries;
+	std::string mKey;   // the file being loaded: "path|size"
+	std::vector<uint32_t> mFound;
+} gN3DSPortraitCache;
+
+static void loadN3DSPortraitCache() {
+	if (gN3DSPortraitCache.mIsLoaded) return;
+	gN3DSPortraitCache.mIsLoaded = 1;
+	FILE* file = fopen(N3DS_PORTRAIT_CACHE_FILE, "r");
+	if (!file) return;
+	char line[1200];
+	while (fgets(line, sizeof(line), file)) {
+		char* tab = strchr(line, '\t');
+		if (!tab) continue;
+		*tab = '\0';
+		std::vector<uint32_t> positions;
+		char* p = tab + 1;
+		while (*p && *p != '\n') {
+			positions.push_back((uint32_t)strtoul(p, &p, 10));
+			while (*p == ' ') p++;
+		}
+		if (!positions.empty()) gN3DSPortraitCache.mEntries[line] = positions;
+	}
+	fclose(file);
+}
+
+static void saveN3DSPortraitCache() {
+	FILE* file = fopen(N3DS_PORTRAIT_CACHE_FILE, "w");
+	if (!file) return;
+	for (const auto& entry : gN3DSPortraitCache.mEntries) {
+		fprintf(file, "%s\t", entry.first.c_str());
+		for (const auto position : entry.second) fprintf(file, "%u ", (unsigned)position);
+		fputc('\n', file);
+	}
+	fclose(file);
+}
+
+static const std::vector<uint32_t>* findN3DSPortraitCacheEntry() {
+	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits) return NULL;
+	loadN3DSPortraitCache();
+	const auto it = gN3DSPortraitCache.mEntries.find(gN3DSPortraitCache.mKey);
+	return it == gN3DSPortraitCache.mEntries.end() ? NULL : &it->second;
+}
+
+static void addN3DSPortraitCacheEntry(const MugenSpriteFile& tFile) {
+	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits) return;
+	if (gN3DSPortraitCache.mFound.empty() || gN3DSPortraitCache.mFound.size() != tFile.mAllSprites.size()) return;
+	gN3DSPortraitCache.mEntries[gN3DSPortraitCache.mKey] = gN3DSPortraitCache.mFound;
+	saveN3DSPortraitCache();
+}
+#endif
+
 static void logSingleSFFSubFile(const SFFSubFileHeader& tSubHeader) {
 	debugFormat("[MugenSpriteFileReader] sff sprite %d: group %d image %d length %d linkedTo %d", gLoadedSubFileAmount++, (int)tSubHeader.mGroup, (int)tSubHeader.mImage, (int)tSubHeader.mSubfileLength, (int)tSubHeader.mIndexOfPreciousSpriteCopy);
 }
@@ -947,6 +1012,11 @@ static void loadSingleSFFFile(MugenSpriteFile* tDst) {
 	}
 
 	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits || (subHeader.mGroup == 9000 && subHeader.mImage <= 1)) {
+#ifdef __3DS__
+		if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits) {
+			gN3DSPortraitCache.mFound.push_back(gPrismMugenSpriteFileReaderData.mReader.mGetCurrentOffset(&gPrismMugenSpriteFileReaderData.mReader) - sizeof(SFFSubFileHeader));
+		}
+#endif
 		loadSingleSFFFileAndInsertIntoSpriteFile(subHeader, tDst);
 	}
 
@@ -1005,12 +1075,37 @@ static MugenSpriteFile loadMugenSpriteFile1(int tHasPaletteFile, const char* tOp
 	gPreviousGroup = -1;
 	gLoadedSubFileAmount = 0;
 
+#ifdef __3DS__
+	if (const auto positions = findN3DSPortraitCacheEntry()) {
+		int isValid = 1;
+		for (const auto position : *positions) {
+			SFFSubFileHeader subHeader;
+			gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, position);
+			gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &subHeader, sizeof(SFFSubFileHeader));
+			if (subHeader.mGroup != 9000 || subHeader.mImage > 1) isValid = 0;
+		}
+		if (isValid) {
+			for (const auto position : *positions) {
+				SFFSubFileHeader subHeader;
+				gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, position);
+				gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &subHeader, sizeof(SFFSubFileHeader));
+				loadSingleSFFFileAndInsertIntoSpriteFile(subHeader, &ret);
+			}
+			return ret;
+		}
+	}
+	gN3DSPortraitCache.mFound.clear();
+#endif
+
 	gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, header.mFirstFileOffset);
 	while (!gPrismMugenSpriteFileReaderData.mReader.mIsOver(&gPrismMugenSpriteFileReaderData.mReader)) {
 		loadSingleSFFFile(&ret);
 		if(gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && ret.mAllSprites.size() == 2) break;
 	}
 
+#ifdef __3DS__
+	addN3DSPortraitCacheEntry(ret);
+#endif
 	return ret;
 }
 
@@ -1240,7 +1335,13 @@ static void loadSprites2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tHasPal
 	int i = 0;
 	gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, tHeader->mSpriteOffset);
 	for (i = 0; i < (int)tHeader->mSpriteTotal; i++) {
+#ifdef __3DS__
+		const size_t spritesBefore = tDst->mAllSprites.size();
+#endif
 		loadSingleSprite2(tHeader, tDst, tHasPalette);
+#ifdef __3DS__
+		if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && tDst->mAllSprites.size() > spritesBefore) gN3DSPortraitCache.mFound.push_back(i);
+#endif
 		if(gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && tDst->mAllSprites.size() == 2) break;
 	}
 }
@@ -1263,8 +1364,32 @@ static MugenSpriteFile loadMugenSpriteFile2(int tHasPaletteFile, const char* tOp
 	verboseInteger(header.mPaletteTotal);
 
 	loadPalettes2(&header, &ret);
+
+#ifdef __3DS__
+	if (const auto indices = findN3DSPortraitCacheEntry()) {
+		int isValid = 1;
+		for (const auto index : *indices) {
+			SFFSprite2 sprite;
+			if (index >= header.mSpriteTotal) { isValid = 0; break; }
+			gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, header.mSpriteOffset + index * sizeof(SFFSprite2));
+			gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &sprite, sizeof(SFFSprite2));
+			if (sprite.mGroupNo != 9000 || sprite.mItemNo > 1) isValid = 0;
+		}
+		if (isValid) {
+			for (const auto index : *indices) {
+				gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, header.mSpriteOffset + index * sizeof(SFFSprite2));
+				loadSingleSprite2(&header, &ret, tHasPaletteFile);
+			}
+			return ret;
+		}
+	}
+	gN3DSPortraitCache.mFound.clear();
+#endif
 	loadSprites2(&header, &ret, tHasPaletteFile);
 
+#ifdef __3DS__
+	addN3DSPortraitCacheEntry(ret);
+#endif
 	return ret;
 }
 
@@ -1459,11 +1584,16 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	// sprites: 3.4 to 4.5 s in small reads, 0.4 s through a 64 KB buffer,
 	// 0.3 s whole). Files too big for the heap go through the 64 KB buffer.
 	const FileReader originalN3DSReader = gPrismMugenSpriteFileReaderData.mReader;
-	const int n3dsVariant = getFileSize(tPath) <= 16 * 1024 * 1024 ? N3DS_SPRITE_READ_WHOLE : N3DS_SPRITE_READ_BIG_BUFFER;
+	const auto n3dsFileSize = getFileSize(tPath);
+	gN3DSPortraitCache.mKey = std::string(tPath) + "|" + std::to_string((unsigned long)n3dsFileSize);
+	int n3dsVariant = n3dsFileSize <= 16 * 1024 * 1024 ? N3DS_SPRITE_READ_WHOLE : N3DS_SPRITE_READ_BIG_BUFFER;
+	// Portraits found before: only a few reads, through a small buffer.
+	if (findN3DSPortraitCacheEntry()) n3dsVariant = N3DS_SPRITE_READ_PORTRAITS;
 	const N3DSPerfCounters n3dsBefore = gN3DSPerf;
 	const uint64_t n3dsStart = getN3DSPerfTicks();
 	if (n3dsVariant == N3DS_SPRITE_READ_WHOLE) gPrismMugenSpriteFileReaderData.mReader = getBufferFileReader();
 	if (n3dsVariant == N3DS_SPRITE_READ_BIG_BUFFER) gN3DSFileBufferSize = 64 * 1024;
+	if (n3dsVariant == N3DS_SPRITE_READ_PORTRAITS) gN3DSFileBufferSize = 4 * 1024;
 #endif
 	gPrismMugenSpriteFileReaderData.mReader.mInit(&gPrismMugenSpriteFileReaderData.mReader, tPath);
 #ifdef __3DS__
@@ -1498,7 +1628,7 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 #ifdef __3DS__
 	gPrismMugenSpriteFileReaderData.mReader = originalN3DSReader;
 	{
-		static const char* variantNames[] = { "small reads", "64 KB buffer", "whole file" };
+		static const char* variantNames[] = { "small reads", "64 KB buffer", "whole file", "portraits from the cache, 4 KB buffer" };
 		const double total = getN3DSPerfMilliseconds(getN3DSPerfTicks() - n3dsStart);
 		const double io = getN3DSPerfMilliseconds((gN3DSPerf.mOpenTicks - n3dsBefore.mOpenTicks) + (gN3DSPerf.mReadTicks - n3dsBefore.mReadTicks) + (gN3DSPerf.mSeekTicks - n3dsBefore.mSeekTicks));
 		const double tex = getN3DSPerfMilliseconds(gN3DSPerf.mTextureTicks - n3dsBefore.mTextureTicks);
