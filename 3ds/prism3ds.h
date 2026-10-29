@@ -18,8 +18,13 @@ namespace prism {
 	// The color the top screen is cleared to, RGBA8 (screeneffect_3ds.cpp).
 	extern u32 gN3DSClearColor;
 
-	// Makes the texture's texels current (a paletted one, with its palette).
+	// Makes the texture's texels current (a paletted one, with its palette;
+	// made first if they were let go or had no room when loaded).
 	void prepareN3DSTexture(const TextureData& tTexture);
+
+	// A new frame (drawing_3ds.cpp): textures drawn in it, or the one
+	// before, keep their texels.
+	void advanceN3DSTextureFrame();
 
 	// The texture's size on the GPU (powers of two).
 	int getN3DSTextureWidth(const TextureData& tTexture);

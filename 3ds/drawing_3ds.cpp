@@ -263,6 +263,7 @@ namespace prism {
 	void startDrawing() {
 		C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
 		gN3DSDrawingData.mIsFrameStarted = 1;
+		advanceN3DSTextureFrame();
 		// In full width, the game over the whole screen; otherwise black
 		// around the game's screen (as the PC's window, which is just its
 		// size): its background color and sprites only inside it.

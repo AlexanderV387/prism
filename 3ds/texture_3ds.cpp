@@ -4,6 +4,10 @@
 #include <string.h>
 #include <png.h>
 
+#include <algorithm>
+#include <unordered_set>
+#include <vector>
+
 #include "prism/file.h"
 #include "prism/log.h"
 #include "prism/memoryhandler.h"
@@ -173,28 +177,143 @@ namespace prism {
 		return ret;
 	}
 
+	// ==========================================================================
+	// Paletted textures: their 8-bit pixels kept compressed (in runs: most of
+	// a sprite is runs of its transparent color), their texels made when
+	// loaded if there is room, else when first drawn; when there is no room
+	// to make one, the textures drawn longest ago let theirs go (a CvS
+	// character's sprites alone take 56 MB of texels, more than the 3DS has
+	// for two).
+
+	static unsigned int gN3DSTextureFrame = 1;
+	static std::unordered_set<Texture> gResidentTextures;   // paletted, with texels
+	static std::vector<unsigned char> gIndexScratch;
+
+	void advanceN3DSTextureFrame() { gN3DSTextureFrame++; }
+
+	void forgetN3DSTexture(N3DSTextureData* tTexture) { gResidentTextures.erase(tTexture); }
+
+	// Runs: a byte n < 128, then n + 1 bytes as they are; a byte n >= 128,
+	// then one byte n - 127 times.
+	static unsigned char* compressIndices(const unsigned char* tSource, int tSize, int* oCompressedSize) {
+		std::vector<unsigned char>& out = gIndexScratch;
+		out.clear();
+		int i = 0;
+		while (i < tSize) {
+			int run = 1;
+			while (i + run < tSize && run < 128 && tSource[i + run] == tSource[i]) run++;
+			if (run >= 3) {
+				out.push_back((unsigned char)(0x80 | (run - 1)));
+				out.push_back(tSource[i]);
+				i += run;
+				continue;
+			}
+			const int literalStart = i;
+			int length = 0;
+			while (i < tSize && length < 128) {
+				if (i + 2 < tSize && tSource[i] == tSource[i + 1] && tSource[i] == tSource[i + 2]) break;
+				i++;
+				length++;
+			}
+			out.push_back((unsigned char)(length - 1));
+			out.insert(out.end(), tSource + literalStart, tSource + literalStart + length);
+		}
+		unsigned char* ret = (unsigned char*)malloc(out.size());
+		if (ret) memcpy(ret, out.data(), out.size());
+		*oCompressedSize = (int)out.size();
+		return ret;
+	}
+
+	static const unsigned char* decompressIndices(const Texture tTexture, int tSize) {
+		std::vector<unsigned char>& out = gIndexScratch;
+		out.resize(tSize);
+		const unsigned char* p = tTexture->mIndexed;
+		const unsigned char* end = p + tTexture->mIndexedSize;
+		int i = 0;
+		while (p < end && i < tSize) {
+			const int c = *p++;
+			if (c & 0x80) {
+				const int run = std::min((c & 0x7F) + 1, tSize - i);
+				memset(&out[i], *p++, run);
+				i += run;
+			}
+			else {
+				const int length = std::min(c + 1, tSize - i);
+				memcpy(&out[i], p, length);
+				p += c + 1;
+				i += length;
+			}
+		}
+		return out.data();
+	}
+
+	// Lets the texels go of the paletted texture drawn longest ago (not in
+	// this frame or the one before: the GPU may still draw them). 0 if there
+	// is none.
+	static int evictOldestTexture() {
+		Texture oldest = NULL;
+		for (const auto texture : gResidentTextures) {
+			if (texture->mLastUsedFrame + 1 >= gN3DSTextureFrame) continue;
+			if (!oldest || texture->mLastUsedFrame < oldest->mLastUsedFrame) oldest = texture;
+		}
+		if (!oldest) return 0;
+		C3D_TexDelete(&oldest->mTex);
+		oldest->mIsInitialized = 0;
+		gResidentTextures.erase(oldest);
+		gN3DSPerf.mEvictedTextures++;
+		return 1;
+	}
+
+	// The texels of a paletted texture, cleared; when drawn (tIsEvicting),
+	// making room for them if needed.
+	// Linear memory kept free for the rest (sounds, music, other textures):
+	// more when loading, the textures drawn coming first.
+	static const size_t LOAD_RESERVE = 8 * 1024 * 1024;
+	static const size_t DRAW_RESERVE = 3 * 1024 * 1024;
+
+	static int makePalettedTexels(Texture tTexture, int tWidth, int tHeight, int tIsEvicting) {
+		const int width = powerOfTwoAtLeast(tWidth), height = powerOfTwoAtLeast(tHeight);
+		const size_t needed = (size_t)width * height * 2 + (tIsEvicting ? DRAW_RESERVE : LOAD_RESERVE);
+		while (linearSpaceFree() < needed || !C3D_TexInit(&tTexture->mTex, width, height, GPU_RGBA5551)) {
+			if (!tIsEvicting || !evictOldestTexture()) return 0;
+		}
+		tTexture->mIsInitialized = 1;
+		tTexture->mPaletteVersion = -1;
+		C3D_TexSetFilter(&tTexture->mTex, GPU_NEAREST, GPU_NEAREST);
+		C3D_TexSetWrap(&tTexture->mTex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+		memset(tTexture->mTex.data, 0, tTexture->mTex.size);
+		gResidentTextures.insert(tTexture);
+		return 1;
+	}
+
 	TextureData loadPalettedTextureFrom8BitBuffer(const Buffer& b, int tPaletteID, int tWidth, int tHeight) {
 		// RGBA5551: half the memory of RGBA8, and the palettes' alpha is
 		// all or nothing (color 0 transparent).
-		TextureData ret = makeTexture(tWidth, tHeight, GPU_RGBA5551);
+		TextureData ret;
+		ret.mTextureSize.x = tWidth;
+		ret.mTextureSize.y = tHeight;
 		ret.mHasPalette = 1;
 		ret.mPaletteID = tPaletteID;
+		ret.mTexture = allocTextureMemory(sizeof(N3DSTextureData));
+		if (tWidth > MAXIMUM_TEXTURE_SIZE || tHeight > MAXIMUM_TEXTURE_SIZE) {
+			logWarningFormat("Texture of %dx%d cut to %d.", tWidth, tHeight, MAXIMUM_TEXTURE_SIZE);
+		}
 
 		Texture texture = (Texture)ret.mTexture->mData;
-		if (!texture->mIsInitialized) return ret;
-		texture->mIndexed = (unsigned char*)malloc(tWidth * tHeight);
+		texture->mIndexed = compressIndices((const unsigned char*)b.mData, tWidth * tHeight, &texture->mIndexedSize);
 		if (!texture->mIndexed) {
-			logWarning("Out of heap memory: a sprite's palette indices left out.");
-			C3D_TexDelete(&texture->mTex);
-			texture->mIsInitialized = 0;
+			logWarning("Out of heap memory: a sprite left out.");
 			return ret;
 		}
-		memcpy(texture->mIndexed, b.mData, tWidth * tHeight);
-		texture->mPaletteVersion = -1;
 
 		// Converted now with the palette as it is (usually already set), not
 		// in the first frame it is drawn; again later if the palette changes.
-		prepareN3DSTexture(ret);
+		if (makePalettedTexels(texture, tWidth, tHeight, 0)) {
+			prepareN3DSTexture(ret);
+		}
+		else {
+			gN3DSPerf.mDeferredTextures++;
+		}
 		return ret;
 	}
 
@@ -202,11 +321,21 @@ namespace prism {
 		if (!tTexture.mHasPalette) return;
 
 		Texture texture = (Texture)tTexture.mTexture->mData;
-		if (!texture->mIsInitialized) return;
+		texture->mLastUsedFrame = gN3DSTextureFrame;
+		if (!texture->mIndexed) return;
+		const uint64_t start = getN3DSPerfTicks();
+		int isMadeLate = 0;
+		if (!texture->mIsInitialized) {
+			if (!makePalettedTexels(texture, tTexture.mTextureSize.x, tTexture.mTextureSize.y, 1)) {
+				logWarning("Out of texture (linear) memory: a sprite not drawn.");
+				return;
+			}
+			gN3DSPerf.mLateTextures++;
+			isMadeLate = 1;
+		}
 		const int id = tTexture.mPaletteID & 3;
 		if (texture->mPaletteVersion == gN3DSPaletteVersions[id]) return;
 
-		const uint64_t start = getN3DSPerfTicks();
 		C3D_Tex* tex = &texture->mTex;
 		u16* dst = (u16*)tex->data;
 		u16 palette[256];
@@ -215,10 +344,11 @@ namespace prism {
 			palette[i] = (u16)((((c >> 27) & 0x1F) << 11) | (((c >> 19) & 0x1F) << 6) | (((c >> 11) & 0x1F) << 1) | ((c & 0xFF) >= 0x80));
 		}
 		const int w = clampedWidth(tTexture.mTextureSize.x), h = clampedWidth(tTexture.mTextureSize.y);
+		const unsigned char* indices = decompressIndices(texture, tTexture.mTextureSize.x * tTexture.mTextureSize.y);
 
 		for (int y = 0; y < h; y++) {
 			const TexelRow row = texelRow(y, tex);
-			const unsigned char* line = texture->mIndexed + y * tTexture.mTextureSize.x;
+			const unsigned char* line = indices + y * tTexture.mTextureSize.x;
 			for (int x = 0; x < w; x++) {
 				dst[texelOffset(row, x)] = palette[line[x]];
 			}
@@ -227,6 +357,7 @@ namespace prism {
 		C3D_TexFlush(tex);
 		texture->mPaletteVersion = gN3DSPaletteVersions[id];
 		countTexture(start, w, h);
+		if (isMadeLate) gN3DSPerf.mLateTextureTicks += getN3DSPerfTicks() - start;
 	}
 
 	// ==========================================================================

@@ -72,12 +72,17 @@ namespace prism {
 		N3DSTextureData* data = (N3DSTextureData*)malloc(sizeof(N3DSTextureData));
 		data->mIsInitialized = 0;
 		data->mIndexed = NULL;
+		data->mIndexedSize = 0;
 		data->mPaletteVersion = -1;
+		data->mLastUsedFrame = 0;
 		return data;
 	}
 
+	void forgetN3DSTexture(N3DSTextureData* tTexture);   // texture_3ds.cpp
+
 	void freeN3DSTexture(void* tData) {
 		N3DSTextureData* data = (N3DSTextureData*)tData;
+		forgetN3DSTexture(data);
 		if (data->mIsInitialized) C3D_TexDelete(&data->mTex);
 		free(data->mIndexed);
 		free(tData);

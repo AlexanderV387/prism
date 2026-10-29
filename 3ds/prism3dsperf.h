@@ -26,6 +26,13 @@ namespace prism {
 
 		uint64_t mSoundTicks;
 		uint32_t mSounds;
+
+		// Paletted textures without room when loaded (made when drawn), made
+		// when drawn, and let go to make room (texture_3ds.cpp).
+		uint32_t mDeferredTextures;
+		uint32_t mLateTextures;
+		uint64_t mLateTextureTicks;
+		uint32_t mEvictedTextures;
 	} N3DSPerfCounters;
 
 	extern N3DSPerfCounters gN3DSPerf;

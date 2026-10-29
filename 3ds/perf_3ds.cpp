@@ -34,6 +34,7 @@ namespace prism {
 		int mIsLoading;
 		uint64_t mLoadStart;
 		N3DSPerfCounters mLoadCounters;
+		N3DSPerfCounters mShownCounters;   // when the screen was shown
 		int mScreen;
 
 		uint64_t mLastFrame;
@@ -90,6 +91,9 @@ namespace prism {
 		r.mTextureTicks = a.mTextureTicks - b.mTextureTicks; r.mTextures = a.mTextures - b.mTextures; r.mTexels = a.mTexels - b.mTexels;
 		r.mDefTicks = a.mDefTicks - b.mDefTicks; r.mDefs = a.mDefs - b.mDefs;
 		r.mSoundTicks = a.mSoundTicks - b.mSoundTicks; r.mSounds = a.mSounds - b.mSounds;
+		r.mDeferredTextures = a.mDeferredTextures - b.mDeferredTextures;
+		r.mLateTextures = a.mLateTextures - b.mLateTextures; r.mLateTextureTicks = a.mLateTextureTicks - b.mLateTextureTicks;
+		r.mEvictedTextures = a.mEvictedTextures - b.mEvictedTextures;
 		return r;
 	}
 
@@ -98,6 +102,11 @@ namespace prism {
 		addN3DSPerfLine("  screen %d shown: %u frames, %.1f ms average, worst %.1f ms, %u over 17 ms, %u over 34 ms",
 			gPerf.mScreen, gPerf.mFrames, getN3DSPerfMilliseconds(gPerf.mFrameTicks) / gPerf.mFrames,
 			getN3DSPerfMilliseconds(gPerf.mWorstFrame), gPerf.mSlowFrames, gPerf.mVerySlowFrames);
+		const N3DSPerfCounters c = subtract(gN3DSPerf, gPerf.mShownCounters);
+		if (c.mLateTextures || c.mEvictedTextures) {
+			addN3DSPerfLine("  textures made while shown: %u (%.0f ms, %.2f ms each), let go for room: %u",
+				c.mLateTextures, getN3DSPerfMilliseconds(c.mLateTextureTicks), getN3DSPerfMilliseconds(c.mLateTextureTicks) / (c.mLateTextures ? c.mLateTextures : 1), c.mEvictedTextures);
+		}
 		gPerf.mFrames = 0;
 		gPerf.mFrameTicks = gPerf.mWorstFrame = 0;
 		gPerf.mSlowFrames = gPerf.mVerySlowFrames = 0;
@@ -127,7 +136,9 @@ namespace prism {
 			def, c.mDefs, snd, c.mSounds, total - io - tex - def - snd);
 		const auto info = mallinfo();
 		addN3DSPerfLine("  heap %d KB used, linear memory %d KB free", (int)(info.uordblks / 1024), (int)(linearSpaceFree() / 1024));
+		if (c.mDeferredTextures) addN3DSPerfLine("  %u textures without room yet: made when drawn", c.mDeferredTextures);
 		flushPerf();
+		gPerf.mShownCounters = gN3DSPerf;
 		gPerf.mLastFrame = 0;
 	}
 

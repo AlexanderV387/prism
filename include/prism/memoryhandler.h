@@ -15,13 +15,17 @@ typedef pvr_ptr_t Texture;
 namespace prism {
 
 // [3DS] A texture on the GPU (power-of-two sizes, at most 1024). Paletted
-// images keep their 8-bit pixels: the GPU has no palettes, so they are
-// converted with their palette when drawn after it changed.
+// images keep their 8-bit pixels, compressed: the GPU has no palettes, so
+// they are converted with their palette when drawn after it changed, and
+// their texels can be let go when memory runs short and made again when
+// drawn (texture_3ds.cpp).
 typedef struct {
 	C3D_Tex mTex;
 	int mIsInitialized;
 	unsigned char* mIndexed;
+	int mIndexedSize;
 	int mPaletteVersion;
+	unsigned int mLastUsedFrame;
 } N3DSTextureData;
 
 typedef N3DSTextureData* Texture;
