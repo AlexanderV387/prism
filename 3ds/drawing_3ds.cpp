@@ -35,6 +35,7 @@
 namespace prism {
 
 	u32 gN3DSPalettes[4][256];
+	u32 gN3DSClearColor = 0x000000FF;
 	int gN3DSPaletteVersions[4];
 
 	typedef struct {
@@ -243,7 +244,7 @@ namespace prism {
 	void startDrawing() {
 		C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
 		gN3DSDrawingData.mIsFrameStarted = 1;
-		C3D_RenderTargetClear(gN3DSDrawingData.mTop, C3D_CLEAR_ALL, 0x000000FF, 0);
+		C3D_RenderTargetClear(gN3DSDrawingData.mTop, C3D_CLEAR_ALL, gN3DSClearColor, 0);
 		C3D_FrameDrawOn(gN3DSDrawingData.mTop);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, gN3DSDrawingData.mProjectionLocation, &gN3DSDrawingData.mProjection);
 		gN3DSDrawingData.mVertexAmount = 0;

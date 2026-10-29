@@ -15,6 +15,9 @@ namespace prism {
 	extern u32 gN3DSPalettes[4][256];
 	extern int gN3DSPaletteVersions[4];
 
+	// The color the top screen is cleared to, RGBA8 (screeneffect_3ds.cpp).
+	extern u32 gN3DSClearColor;
+
 	// Makes the texture's texels current (a paletted one, with its palette).
 	void prepareN3DSTexture(const TextureData& tTexture);
 
