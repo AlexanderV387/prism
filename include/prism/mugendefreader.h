@@ -68,6 +68,9 @@ int hasMugenDefScriptGroup(MugenDefScript* tScript, const char* tGroupName);
 MugenDefScriptGroup* getMugenDefScriptGroup(MugenDefScript* tScript, const char* tGroupName);
 
 MugenStringVector createAllocatedMugenStringVectorFromString(const char* tString);
+// Adds tValue at the end of the script's group tGroupName (lowercase), as a
+// line of its own ("kfm" under [Characters]); returns 0 without the group.
+int addMugenDefScriptGroupStringStatement(MugenDefScript* tScript, const char* tGroupName, const char* tValue);
 void destroyMugenStringVector(MugenStringVector& tStringVector);
 
 int isMugenDefStringVariable(MugenDefScript* tScript, const char* tGroupName, const char* tVariableName);

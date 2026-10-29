@@ -181,7 +181,7 @@ namespace prism {
 		va_end(args);
 		auto& lines = gCompat.mSections[gCompat.mCurrent].mLines;
 		lines.push_back(line);
-		if (lines.size() > 12) lines.erase(lines.begin());   // a character in many fights
+		if (lines.size() > 200) lines.erase(lines.begin());   // a character in many fights
 		gCompat.mIsDirty = 1;
 	}
 

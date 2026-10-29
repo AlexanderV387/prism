@@ -932,6 +932,29 @@ MugenDefScriptGroup* getMugenDefScriptGroup(MugenDefScript* tScript, const char*
 	return &tScript->mGroups[tGroupName];
 }
 
+int addMugenDefScriptGroupStringStatement(MugenDefScript* tScript, const char* tGroupName, const char* tValue)
+{
+	if (!stl_string_map_contains_array(tScript->mGroups, tGroupName)) return 0;
+	MugenDefScriptGroup* group = &tScript->mGroups[tGroupName];
+
+	MugenDefScriptGroupElement element;
+	element.mType = MUGEN_DEF_SCRIPT_GROUP_STRING_ELEMENT;
+	MugenDefScriptStringElement* e = (MugenDefScriptStringElement*)allocMemory(sizeof(MugenDefScriptStringElement));
+	e->mString = (char*)allocMemory(int(strlen(tValue) + 10));
+	strcpy(e->mString, tValue);
+	element.mData = e;
+
+	char name[100];
+	int i = 0;
+	do {
+		sprintf(name, "added_statement %d", i++);
+	} while (stl_map_contains(group->mElements, std::string(name)));
+	element.mName = name;
+	group->mElements[name] = element;
+	list_push_back(&group->mOrderedElementList, &group->mElements[name]);
+	return 1;
+}
+
 MugenStringVector createAllocatedMugenStringVectorFromString(const char* tString)
 {
 	MugenStringVector ret;
