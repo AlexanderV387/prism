@@ -407,6 +407,12 @@ static void resetTokenReader() {
 static MugenDefToken* parseTokens(Buffer* b) {
 	BufferPointer p = getBufferPointer(*b);
 
+	// A UTF-8 byte order mark (MUGEN 1.1's files start with one) is not
+	// text: it hid each file's first line, a font's [FNT v2] among them.
+	if (b->mLength > 3 && (uint8_t)p[0] == 0xEF && (uint8_t)p[1] == 0xBB && (uint8_t)p[2] == 0xBF) {
+		p += 3;
+	}
+
 	resetTokenReader();
 	while (!gTokenReader.mIsOver) {
 		parseSingleToken(b, &p);

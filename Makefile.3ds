@@ -24,7 +24,7 @@ CXX = $(PREFIX)g++
 AR = $(PREFIX)gcc-ar
 
 ARCH = -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
-CXXFLAGS = $(ARCH) -std=gnu++17 -fpermissive -O2 -g -mword-relocations -ffunction-sections \
+CXXFLAGS = $(ARCH) -std=gnu++17 -fsigned-char -fpermissive -O2 -g -mword-relocations -ffunction-sections \
 	-Wno-write-strings -D__3DS__ -Iinclude -Ilinux/shim -I$(OBJDIR)/3ds \
 	-I$(DEVKITPRO)/libctru/include -I$(DEVKITPRO)/portlibs/3ds/include
 

@@ -18,7 +18,9 @@
 // [3DS] Drawing with citro3d, on the top screen. As on the Vita, sprites are
 // kept with their state and drawn sorted by z when the frame ends; the
 // game's screen (getScreenSize, 320x240 for Dolmexica) is scaled to fit the
-// top screen's 400x240, centered.
+// top screen's 400x240, centered; in the wide mode (800x240) the GPU draws
+// it with twice the pixels across, so big sprites keep more of their
+// detail.
 //
 // Each sprite is two triangles in one vertex buffer; sprites in a row with
 // the same texture and state are drawn together. The state:
@@ -79,7 +81,9 @@ namespace prism {
 		float r, g, b, a;
 	} Vertex;
 
-	static const int TOP_WIDTH = 400;
+	// The top screen: 800x240 in its wide mode (not on the original 2DS),
+	// each of the game's pixels twice as wide, else 400x240.
+	static int TOP_WIDTH = 400;
 	static const int TOP_HEIGHT = 240;
 	static const int MAXIMUM_VERTEX_AMOUNT = 6 * 8192;
 
@@ -113,13 +117,24 @@ namespace prism {
 
 	static void updateScreenTransform() {
 		const ScreenSize sz = getScreenSize();
-		const float scale = fminf(TOP_WIDTH / (float)sz.x, TOP_HEIGHT / (float)sz.y);
-		gN3DSDrawingData.mScreenScale = Vector3D(scale, scale, 1);
-		gN3DSDrawingData.mScreenOffset = Vector3D(floorf((TOP_WIDTH - sz.x * scale) / 2), floorf((TOP_HEIGHT - sz.y * scale) / 2), 0);
+		const float scale = fminf(400 / (float)sz.x, TOP_HEIGHT / (float)sz.y);
+		const float scaleX = scale * TOP_WIDTH / 400;
+		gN3DSDrawingData.mScreenScale = Vector3D(scaleX, scale, 1);
+		gN3DSDrawingData.mScreenOffset = Vector3D(floorf((TOP_WIDTH - sz.x * scaleX) / 2), floorf((TOP_HEIGHT - sz.y * scale) / 2), 0);
 	}
 
 	void initDrawing() {
 		C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4);
+
+		u8 model = CFG_MODEL_2DS;
+		if (R_SUCCEEDED(cfguInit())) {
+			CFGU_GetSystemModel(&model);
+			cfguExit();
+		}
+		if (model != CFG_MODEL_2DS) {
+			TOP_WIDTH = 800;
+			gfxSetWide(true);
+		}
 
 		gN3DSDrawingData.mTop = C3D_RenderTargetCreate(TOP_HEIGHT, TOP_WIDTH, GPU_RB_RGBA8, C3D_DEPTHTYPE(-1));
 		C3D_RenderTargetSetOutput(gN3DSDrawingData.mTop, GFX_TOP, GFX_LEFT,
