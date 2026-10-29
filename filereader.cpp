@@ -2,6 +2,8 @@
 
 #include "prism/memoryhandler.h"
 
+#include <string.h>
+
 namespace prism {
 
 	typedef struct {
@@ -149,6 +151,133 @@ namespace prism {
 		ret.mDelete = deleteFileReader;
 		ret.mSetOver = setFileReaderOver;
 		ret.mIsOver = isFileReaderOver;
+		return ret;
+	}
+
+	// A file read a window at a time (1 MB): reads and seeks inside the window
+	// cost nothing, large reads keep the SD card fast, and only the window is
+	// in memory (not the whole file).
+	static const uint32_t FILE_READER_WINDOW_SIZE = 1024 * 1024;
+
+	typedef struct {
+		FileHandler mFile;
+		uint32_t mFileSize;
+		uint32_t mPosition;
+		char* mWindow;
+		uint32_t mWindowStart;
+		uint32_t mWindowLength;
+		int mIsOver;
+	} WindowedFileReaderData;
+
+	static void initWindowedFileReader(FileReader* tReader, const char* tPath) {
+		WindowedFileReaderData* data = (WindowedFileReaderData*)allocMemory(sizeof(WindowedFileReaderData));
+		data->mFile = fileOpen(tPath, O_RDONLY);
+		data->mFileSize = uint32_t(fileTotal(data->mFile));
+		data->mPosition = 0;
+		data->mWindow = (char*)allocMemory(FILE_READER_WINDOW_SIZE);
+		data->mWindowStart = data->mWindowLength = 0;
+		data->mIsOver = 0;
+		tReader->mData = data;
+	}
+
+	static void deleteWindowedFileReader(FileReader* tReader) {
+		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
+		fileClose(data->mFile);
+		freeMemory(data->mWindow);
+		freeMemory(data);
+	}
+
+	static int isInWindow(WindowedFileReaderData* tData, uint32_t tPosition, uint32_t tSize) {
+		return tPosition >= tData->mWindowStart && tPosition + tSize <= tData->mWindowStart + tData->mWindowLength;
+	}
+
+	static void fillWindow(WindowedFileReaderData* tData, uint32_t tPosition) {
+		tData->mWindowStart = tPosition;
+		tData->mWindowLength = 0;
+		if (tPosition >= tData->mFileSize) return;
+		const uint32_t length = tData->mFileSize - tPosition < FILE_READER_WINDOW_SIZE ? tData->mFileSize - tPosition : FILE_READER_WINDOW_SIZE;
+		fileSeek(tData->mFile, tPosition, SEEK_SET);
+		tData->mWindowLength = uint32_t(fileRead(tData->mFile, tData->mWindow, length));
+	}
+
+	static void readWindowedFileReader(FileReader* tReader, void* tDst, uint32_t tSize) {
+		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
+		char* dst = (char*)tDst;
+		while (tSize) {
+			if (!isInWindow(data, data->mPosition, 1)) {
+				if (tSize >= FILE_READER_WINDOW_SIZE) {
+					fileSeek(data->mFile, data->mPosition, SEEK_SET);
+					const uint32_t read = uint32_t(fileRead(data->mFile, dst, tSize));
+					data->mPosition += read;
+					if (read < tSize) memset(dst + read, 0, tSize - read);
+					return;
+				}
+				fillWindow(data, data->mPosition);
+				if (!data->mWindowLength) {
+					memset(dst, 0, tSize);
+					return;
+				}
+			}
+			const uint32_t offset = data->mPosition - data->mWindowStart;
+			uint32_t amount = data->mWindowLength - offset;
+			if (amount > tSize) amount = tSize;
+			memcpy(dst, data->mWindow + offset, amount);
+			dst += amount;
+			data->mPosition += amount;
+			tSize -= amount;
+		}
+	}
+
+	static void seekWindowedFileReader(FileReader* tReader, uint32_t tPosition) {
+		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
+		data->mPosition = tPosition;
+		if (tPosition >= data->mFileSize) {
+			tReader->mSetOver(tReader);
+		}
+	}
+
+	// Inside the window, the window itself (valid until the next read).
+	static Buffer readWindowedFileReaderBuffer(FileReader* tReader, uint32_t tSize) {
+		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
+		if (tSize < FILE_READER_WINDOW_SIZE && !isInWindow(data, data->mPosition, tSize)) {
+			fillWindow(data, data->mPosition);
+		}
+		if (isInWindow(data, data->mPosition, tSize)) {
+			return makeBuffer(data->mWindow + (data->mPosition - data->mWindowStart), tSize);
+		}
+		const uint32_t originalPosition = data->mPosition;
+		char* dst = (char*)allocMemory(tSize + 10);
+		readWindowedFileReader(tReader, dst, tSize);
+		data->mPosition = originalPosition;
+		return makeBufferOwned(dst, tSize);
+	}
+
+	static uint32_t getCurrentWindowedFileReaderOffset(FileReader* tReader) {
+		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
+		return data->mPosition;
+	}
+
+	static void setWindowedFileReaderOver(FileReader* tReader) {
+		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
+		data->mIsOver = 1;
+	}
+
+	static int isWindowedFileReaderOver(FileReader* tReader) {
+		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
+		return data->mIsOver;
+	}
+
+	FileReader getWindowedFileFileReader() {
+		FileReader ret;
+		ret.mType = FILE_READER_TYPE_FILE;
+		ret.mInit = initWindowedFileReader;
+		ret.mRead = readWindowedFileReader;
+		ret.mReadBufferReadOnly = readWindowedFileReaderBuffer;
+		ret.mSeek = seekWindowedFileReader;
+		ret.mGetCurrentOffset = getCurrentWindowedFileReaderOffset;
+		ret.mDelete = deleteWindowedFileReader;
+		ret.mSetOver = setWindowedFileReaderOver;
+		ret.mIsOver = isWindowedFileReaderOver;
 		return ret;
 	}
 

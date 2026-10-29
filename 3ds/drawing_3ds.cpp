@@ -260,8 +260,17 @@ namespace prism {
 	// ==========================================================================
 	// The frame.
 
+	// For the load log: this frame's wait in C3D_FrameBegin, when its drawing
+	// began, its sprites and batches.
+	static uint64_t gFrameWaitTicks, gFrameDrawStart;
+	static int gFrameSprites, gFrameBatches;
+
 	void startDrawing() {
+		const uint64_t waitStart = getN3DSPerfTicks();
 		C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+		gFrameDrawStart = getN3DSPerfTicks();
+		gFrameWaitTicks = gFrameDrawStart - waitStart;
+		gFrameSprites = gFrameBatches = 0;
 		gN3DSDrawingData.mIsFrameStarted = 1;
 		advanceN3DSTextureFrame();
 		// In full width, the game over the whole screen; otherwise black
@@ -381,7 +390,10 @@ namespace prism {
 
 	static void flushBatch() {
 		const int amount = gN3DSDrawingData.mVertexAmount - gBatchStart;
-		if (amount > 0) C3D_DrawArrays(GPU_TRIANGLES, gBatchStart, amount);
+		if (amount > 0) {
+			C3D_DrawArrays(GPU_TRIANGLES, gBatchStart, amount);
+			gFrameBatches++;
+		}
 		gBatchStart = gN3DSDrawingData.mVertexAmount;
 	}
 
@@ -429,6 +441,7 @@ namespace prism {
 			v2 = r.bottomRight.y / texHeight;
 		}
 
+		gFrameSprites++;
 		Vertex* v = gN3DSDrawingData.mVertices + gN3DSDrawingData.mVertexAmount;
 		setVertex(&v[0], e.mTopLeft, u1, v1, e.mData);
 		setVertex(&v[1], e.mBottomLeft, u1, v2, e.mData);
@@ -491,9 +504,10 @@ namespace prism {
 		gDrawList.clear();
 
 		GSPGPU_FlushDataCache(gN3DSDrawingData.mVertices, gN3DSDrawingData.mVertexAmount * sizeof(Vertex));
+		const uint64_t drawTicks = getN3DSPerfTicks() - gFrameDrawStart;
 		C3D_FrameEnd(0);
 		gN3DSDrawingData.mIsFrameStarted = 0;
-		addN3DSPerfFrame();
+		addN3DSPerfFrame(gFrameWaitTicks, drawTicks, gFrameSprites, gFrameBatches);
 	}
 
 	void waitForRendering() {}

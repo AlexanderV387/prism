@@ -24,6 +24,7 @@
 
 #ifdef __3DS__
 #include "3ds/prism3dsperf.h"
+#include <malloc.h>
 #endif
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 #include "3ds/prism3ds.h"
@@ -836,6 +837,61 @@ static void insertPaletteIntoMugenSpriteFile(MugenSpriteFile* tSprites, const Bu
 }
 
  
+#ifdef __3DS__
+extern "C" {
+	extern u32 __ctru_heap_size;
+}
+
+// [3DS] Heap kept free while loading sprites: a character whose sprites do
+// not fit gets some left out (not drawn), not a crash for want of memory.
+// The heap in use is asked for every 16 sprites (it goes through the free
+// blocks), estimated in between.
+static size_t gN3DSSpriteHeapReserve = 4 * 1024 * 1024;
+static int gN3DSSpritesLeftOut;
+static int gN3DSHeapUsedCheckedSprites;
+static size_t gN3DSHeapUsed;
+
+void setMugenSpriteFileReaderHeapReserve(size_t tReserve) {
+	gN3DSSpriteHeapReserve = tReserve;
+}
+
+static int hasN3DSHeapRoomForSprite(size_t tNeeded) {
+	if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits) return 1;
+	if (!(gN3DSHeapUsedCheckedSprites++ & 15)) gN3DSHeapUsed = mallinfo().uordblks;
+	gN3DSHeapUsed += tNeeded / 3;
+	if (gN3DSHeapUsed + tNeeded + gN3DSSpriteHeapReserve > __ctru_heap_size) {
+		gN3DSHeapUsed = mallinfo().uordblks;
+		gN3DSHeapUsedCheckedSprites = 1;
+		if (gN3DSHeapUsed + tNeeded + gN3DSSpriteHeapReserve > __ctru_heap_size) {
+			gN3DSSpritesLeftOut++;
+			logWarning("Out of heap memory: a sprite left out.");
+			return 0;
+		}
+	}
+	if (tNeeded >= 512 * 1024) {
+		// In one piece, as it is asked for.
+		void* probe = malloc(tNeeded + 1024 * 1024);
+		if (!probe) {
+			gN3DSSpritesLeftOut++;
+			logWarning("Out of heap memory: a sprite left out.");
+			return 0;
+		}
+		free(probe);
+	}
+	return 1;
+}
+#endif
+
+// SFF v1: the file's first palette, and whether the sprites now use it (the
+// ones sharing the palette before them).
+static std::vector<uint8_t> gPCXBasePalette;
+static int gIsOnPCXBasePalette;
+
+static void resetPCXBasePalette() {
+	gPCXBasePalette.clear();
+	gIsOnPCXBasePalette = 1;
+}
+
 static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int mIsUsingOwnPalette, const Buffer& b, const Vector2D& tAxisOffset) {
 	PCXHeader header;
 
@@ -862,20 +918,38 @@ static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int
 		encodedSize = b.mLength - sizeof(PCXHeader);
 	}
 
-	Buffer encodedImageBuffer = makeBuffer(p, encodedSize);
-	Buffer rawImageBuffer = decodeRLE5BufferAndReturnOwnedBuffer(encodedImageBuffer, pcxImageSize);
-
 	if (mIsUsingOwnPalette) {
 		auto insertPalette = loadPCXPaletteToBuffer(p, encodedSize);
-		insertPaletteIntoMugenSpriteFile(tDst, insertPalette);
+		if (gPCXBasePalette.empty()) {
+			gPCXBasePalette.assign((const uint8_t*)insertPalette.mData, (const uint8_t*)insertPalette.mData + 256 * 3);
+		}
+		// A palette of its own that is the file's first one (the character's
+		// colors, repeated) is the character's palette: the .act chosen, as
+		// in MUGEN (CvS characters repeat it in 0,1, then share it).
+		if (!tDst->mPalettes.empty() && !memcmp(insertPalette.mData, gPCXBasePalette.data(), 256 * 3)) {
+			freeBuffer(insertPalette);
+			gIsOnPCXBasePalette = 1;
+		}
+		else {
+			insertPaletteIntoMugenSpriteFile(tDst, insertPalette);
+			gIsOnPCXBasePalette = tDst->mPalettes.size() == 1;
+		}
 	}
 	assert(!tDst->mPalettes.empty());
 
-	if (gPrismMugenSpriteFileReaderData.mIsUsingRealPalette && tDst->mPalettes.size() == 1) {
+#ifdef __3DS__
+	if (!hasN3DSHeapRoomForSprite((size_t)pcxImageSize * 3)) {
+		return makeMugenSpriteFileSprite(std::vector<MugenSpriteFileSubSprite>(), makeTextureSize(w, h), tAxisOffset);
+	}
+#endif
+	Buffer encodedImageBuffer = makeBuffer(p, encodedSize);
+	Buffer rawImageBuffer = decodeRLE5BufferAndReturnOwnedBuffer(encodedImageBuffer, pcxImageSize);
+
+	if (gIsOnPCXBasePalette && gPrismMugenSpriteFileReaderData.mIsUsingRealPalette) {
 		return makeMugenSpriteFileSpriteFromRawBuffer(rawImageBuffer, w, h, header.mBytesPerLine, tAxisOffset);
 	}
 	else {
-		auto paletteElement = tDst->mPalettes.back();
+		auto paletteElement = gIsOnPCXBasePalette ? tDst->mPalettes.front() : tDst->mPalettes.back();
 		return makeMugenSpriteFileSpriteFromRawAndPaletteBuffer(rawImageBuffer, paletteElement.mBuffer, w, h, header.mBytesPerLine, tAxisOffset);
 	}
 	
@@ -887,6 +961,7 @@ static void unloadSinglePalette(MugenSpriteFilePalette& palette);
 MugenSpriteFileSprite loadSingleTextureFromPCXBuffer(const Buffer& tBuffer) {
 	MugenSpriteFile sprites = makeEmptySpriteFile();
 
+	resetPCXBasePalette();
 	auto sprite = loadTextureFromPCXBuffer(&sprites, 1, tBuffer, Vector2D(0, 0));
 	for (auto& palette : sprites.mPalettes)
 	{
@@ -1006,6 +1081,7 @@ static void loadSingleSFFFileAndInsertIntoSpriteFile(const SFFSubFileHeader& sub
 		Buffer pcxBuffer = gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, subHeader.mSubfileLength);
 		int isFirstImageWithActiveActFile = gPrismMugenSpriteFileReaderData.mHasPaletteFile && subHeader.mGroup == 0 && subHeader.mImage == 0; 
 		int isUsingOwnPalette = !subHeader.mHasSamePaletteAsPreviousImage && !isFirstImageWithActiveActFile;
+		if (isFirstImageWithActiveActFile) gIsOnPCXBasePalette = 1;
 		gPreviousGroup = subHeader.mGroup;
 		texture = loadTextureFromPCXBuffer(tDst, isUsingOwnPalette, pcxBuffer, Vector2D(subHeader.mImageAxisXCoordinate, subHeader.mImageAxisYCoordinate));
 		freeBuffer(pcxBuffer);
@@ -1106,6 +1182,7 @@ static MugenSpriteFile loadMugenSpriteFile1(int tHasPaletteFile, const char* tOp
 
 	gPreviousGroup = -1;
 	gLoadedSubFileAmount = 0;
+	resetPCXBasePalette();
 
 #ifdef __3DS__
 	if (const auto positions = findN3DSPortraitCacheEntry()) {
@@ -1330,6 +1407,12 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 	const int palette = tHasPalette ? sprite.mPaletteIndex + 1 : sprite.mPaletteIndex;
 
 	MugenSpriteFileSprite e;
+#ifdef __3DS__
+	if ((isPaletted || isRawPNG) && !hasN3DSHeapRoomForSprite((size_t)sprite.mWidth * sprite.mHeight * (sprite.mColorDepth > 8 ? 8 : 3) + sprite.mDataLength)) {
+		e = makeMugenSpriteFileSprite(std::vector<MugenSpriteFileSubSprite>(), makeTextureSize(sprite.mWidth, sprite.mHeight), Vector2D(sprite.mAxisX, sprite.mAxisY));
+	}
+	else
+#endif
 	if (isPaletted) {
 		uint32_t originalPosition = gPrismMugenSpriteFileReaderData.mReader.mGetCurrentOffset(&gPrismMugenSpriteFileReaderData.mReader);
 
@@ -1612,18 +1695,23 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	checkMugenSpriteFileReader();
 
 #ifdef __3DS__
-	// [3DS] Read at once: the SD card is slow at small reads (Kung Fu Man's
-	// sprites: 3.4 to 4.5 s in small reads, 0.4 s through a 64 KB buffer,
-	// 0.3 s whole). Files too big for the heap go through the 64 KB buffer.
+	// [3DS] Read in large reads: the SD card is slow at small ones (Kung Fu
+	// Man's sprites: 3.4 to 4.5 s in small reads, 0.4 s through a 64 KB
+	// buffer, 0.3 s whole; Morrigan's 20 MB, 5.4 s of SD through 64 KB with a
+	// seek per sprite). Small files whole, the rest a megabyte at a time (the
+	// whole of a big one took heap the sprites needed).
 	const FileReader originalN3DSReader = gPrismMugenSpriteFileReaderData.mReader;
 	const auto n3dsFileSize = getFileSize(tPath);
 	gN3DSPortraitCache.mKey = std::string(tPath) + "|" + std::to_string((unsigned long)n3dsFileSize);
-	int n3dsVariant = n3dsFileSize <= 16 * 1024 * 1024 ? N3DS_SPRITE_READ_WHOLE : N3DS_SPRITE_READ_BIG_BUFFER;
+	int n3dsVariant = n3dsFileSize <= 2 * 1024 * 1024 ? N3DS_SPRITE_READ_WHOLE : N3DS_SPRITE_READ_WINDOWED;
+	gN3DSSpritesLeftOut = 0;
+	gN3DSHeapUsedCheckedSprites = 0;
 	// Portraits found before: only a few reads, through a small buffer.
 	if (findN3DSPortraitCacheEntry()) n3dsVariant = N3DS_SPRITE_READ_PORTRAITS;
 	const N3DSPerfCounters n3dsBefore = gN3DSPerf;
 	const uint64_t n3dsStart = getN3DSPerfTicks();
 	if (n3dsVariant == N3DS_SPRITE_READ_WHOLE) gPrismMugenSpriteFileReaderData.mReader = getBufferFileReader();
+	if (n3dsVariant == N3DS_SPRITE_READ_WINDOWED) gPrismMugenSpriteFileReaderData.mReader = getWindowedFileFileReader();
 	if (n3dsVariant == N3DS_SPRITE_READ_BIG_BUFFER) gN3DSFileBufferSize = 64 * 1024;
 	if (n3dsVariant == N3DS_SPRITE_READ_PORTRAITS) gN3DSFileBufferSize = 4 * 1024;
 #endif
@@ -1660,13 +1748,14 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 #ifdef __3DS__
 	gPrismMugenSpriteFileReaderData.mReader = originalN3DSReader;
 	{
-		static const char* variantNames[] = { "small reads", "64 KB buffer", "whole file", "portraits from the cache, 4 KB buffer" };
+		static const char* variantNames[] = { "small reads", "64 KB buffer", "whole file", "portraits from the cache, 4 KB buffer", "1 MB at a time" };
 		const double total = getN3DSPerfMilliseconds(getN3DSPerfTicks() - n3dsStart);
 		const double io = getN3DSPerfMilliseconds((gN3DSPerf.mOpenTicks - n3dsBefore.mOpenTicks) + (gN3DSPerf.mReadTicks - n3dsBefore.mReadTicks) + (gN3DSPerf.mSeekTicks - n3dsBefore.mSeekTicks));
 		const double tex = getN3DSPerfMilliseconds(gN3DSPerf.mTextureTicks - n3dsBefore.mTextureTicks);
 		addN3DSPerfLine("  sprites %s (%s): %.0f ms | SD %.0f ms (%u reads, %u seeks, %.0f KB) | textures %.0f ms (%u) | decoding and the rest %.0f ms",
 			tPath, variantNames[n3dsVariant], total, io, gN3DSPerf.mReads - n3dsBefore.mReads, gN3DSPerf.mSeeks - n3dsBefore.mSeeks,
 			(gN3DSPerf.mReadBytes - n3dsBefore.mReadBytes) / 1024.0, tex, gN3DSPerf.mTextures - n3dsBefore.mTextures, total - io - tex);
+		if (gN3DSSpritesLeftOut) addN3DSPerfLine("  %d sprites left out: no room in the heap", gN3DSSpritesLeftOut);
 	}
 #endif
 

@@ -9,8 +9,10 @@
 #include <malloc.h>
 
 #include <3ds.h>
+#include <citro3d.h>
 
 #include "prism/log.h"
+#include "prism/mugenanimationhandler.h"
 
 #ifndef N3DS_PERF_FILE
 #define N3DS_PERF_FILE "sdmc:/3ds/dolmexica/load-log.txt"
@@ -26,6 +28,34 @@ namespace prism {
 	N3DSPerfCounters gN3DSPerf;
 	int gN3DSFileBufferSize;
 
+	// Where frames' time went: game logic (the rest), making the drawing,
+	// waiting for the GPU and the screen; the GPU's own drawing time.
+	typedef struct {
+		uint32_t mFrames;
+		uint64_t mFrameTicks, mWaitTicks, mDrawTicks;
+		double mGPUMilliseconds;
+		uint64_t mSprites, mBatches;
+	} FrameParts;
+
+	static void addFrameParts(FrameParts* tParts, uint64_t tFrameTicks, uint64_t tWaitTicks, uint64_t tDrawTicks, int tSprites, int tBatches) {
+		tParts->mFrames++;
+		tParts->mFrameTicks += tFrameTicks;
+		tParts->mWaitTicks += tWaitTicks;
+		tParts->mDrawTicks += tDrawTicks;
+		tParts->mGPUMilliseconds += C3D_GetDrawingTime();
+		tParts->mSprites += tSprites;
+		tParts->mBatches += tBatches;
+	}
+
+	static void describeFrameParts(const FrameParts& tParts, char* oText, size_t tSize) {
+		const double n = tParts.mFrames ? tParts.mFrames : 1;
+		const double frame = getN3DSPerfMilliseconds(tParts.mFrameTicks) / n;
+		const double wait = getN3DSPerfMilliseconds(tParts.mWaitTicks) / n;
+		const double draw = getN3DSPerfMilliseconds(tParts.mDrawTicks) / n;
+		snprintf(oText, tSize, "%.1f ms a frame: game logic %.1f ms, making the drawing %.1f ms, waiting for GPU and screen %.1f ms | GPU drawing %.1f ms | %.0f sprites in %.0f batches",
+			frame, frame - wait - draw, draw, wait, tParts.mGPUMilliseconds / n, tParts.mSprites / n, tParts.mBatches / n);
+	}
+
 	static struct {
 		FILE* mFile;
 		std::string mPending;
@@ -38,6 +68,9 @@ namespace prism {
 		int mScreen;
 
 		uint64_t mLastFrame;
+		FrameParts mParts;      // the screen's
+		FrameParts mInterval;   // the last 10 seconds'
+		int mIntervalNumber;
 		uint32_t mFrames;
 		uint64_t mFrameTicks, mWorstFrame;
 		uint32_t mSlowFrames;   // over 17 ms
@@ -94,6 +127,7 @@ namespace prism {
 		r.mDeferredTextures = a.mDeferredTextures - b.mDeferredTextures;
 		r.mLateTextures = a.mLateTextures - b.mLateTextures; r.mLateTextureTicks = a.mLateTextureTicks - b.mLateTextureTicks;
 		r.mEvictedTextures = a.mEvictedTextures - b.mEvictedTextures;
+		r.mRepaletted = a.mRepaletted - b.mRepaletted; r.mRepalettedTicks = a.mRepalettedTicks - b.mRepalettedTicks;
 		return r;
 	}
 
@@ -102,12 +136,21 @@ namespace prism {
 		addN3DSPerfLine("  screen %d shown: %u frames, %.1f ms average, worst %.1f ms, %u over 17 ms, %u over 34 ms",
 			gPerf.mScreen, gPerf.mFrames, getN3DSPerfMilliseconds(gPerf.mFrameTicks) / gPerf.mFrames,
 			getN3DSPerfMilliseconds(gPerf.mWorstFrame), gPerf.mSlowFrames, gPerf.mVerySlowFrames);
+		char parts[300];
+		describeFrameParts(gPerf.mParts, parts, sizeof(parts));
+		addN3DSPerfLine("  %s", parts);
 		const N3DSPerfCounters c = subtract(gN3DSPerf, gPerf.mShownCounters);
+		if (c.mRepaletted) {
+			addN3DSPerfLine("  textures made again for a changed palette: %u (%.0f ms)", c.mRepaletted, getN3DSPerfMilliseconds(c.mRepalettedTicks));
+		}
 		if (c.mLateTextures || c.mEvictedTextures) {
 			addN3DSPerfLine("  textures made while shown: %u (%.0f ms, %.2f ms each), let go for room: %u",
 				c.mLateTextures, getN3DSPerfMilliseconds(c.mLateTextureTicks), getN3DSPerfMilliseconds(c.mLateTextureTicks) / (c.mLateTextures ? c.mLateTextures : 1), c.mEvictedTextures);
 		}
 		gPerf.mFrames = 0;
+		memset(&gPerf.mParts, 0, sizeof(gPerf.mParts));
+		memset(&gPerf.mInterval, 0, sizeof(gPerf.mInterval));
+		gPerf.mIntervalNumber = 0;
 		gPerf.mFrameTicks = gPerf.mWorstFrame = 0;
 		gPerf.mSlowFrames = gPerf.mVerySlowFrames = 0;
 	}
@@ -256,10 +299,29 @@ namespace prism {
 		addN3DSPerfLine("load-time log: time in ms since the start, then what happened");
 	}
 
-	void addN3DSPerfFrame() {
+	// Every 10 seconds of a screen (600 frames), how its frames went: what
+	// grows (animations, the heap) shows there.
+	static const uint32_t INTERVAL_FRAMES = 600;
+
+	static void writeIntervalLine() {
+		gPerf.mIntervalNumber++;
+		char parts[300];
+		describeFrameParts(gPerf.mInterval, parts, sizeof(parts));
+		const auto info = mallinfo();
+		addN3DSPerfLine("  at %d s: %s | %d animations | heap %d KB used, linear memory %d KB free, %u textures made while shown, %u let go, %u made again for a palette (%.0f ms)",
+			gPerf.mIntervalNumber * 10, parts, getMugenAnimationHandlerLiveAmount(), (int)(info.uordblks / 1024), (int)(linearSpaceFree() / 1024),
+			gN3DSPerf.mLateTextures - gPerf.mShownCounters.mLateTextures, gN3DSPerf.mEvictedTextures - gPerf.mShownCounters.mEvictedTextures,
+			gN3DSPerf.mRepaletted - gPerf.mShownCounters.mRepaletted, getN3DSPerfMilliseconds(gN3DSPerf.mRepalettedTicks - gPerf.mShownCounters.mRepalettedTicks));
+		memset(&gPerf.mInterval, 0, sizeof(gPerf.mInterval));
+	}
+
+	void addN3DSPerfFrame(uint64_t tWaitTicks, uint64_t tDrawTicks, int tSprites, int tBatches) {
 		const uint64_t now = getN3DSPerfTicks();
 		if (gPerf.mLastFrame && !gPerf.mIsLoading) {
 			const uint64_t t = now - gPerf.mLastFrame;
+			addFrameParts(&gPerf.mParts, t, tWaitTicks, tDrawTicks, tSprites, tBatches);
+			addFrameParts(&gPerf.mInterval, t, tWaitTicks, tDrawTicks, tSprites, tBatches);
+			if (gPerf.mInterval.mFrames >= INTERVAL_FRAMES) writeIntervalLine();
 			gPerf.mFrames++;
 			gPerf.mFrameTicks += t;
 			if (t > gPerf.mWorstFrame) gPerf.mWorstFrame = t;

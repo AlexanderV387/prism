@@ -426,6 +426,7 @@ namespace prism {
 		}
 		const int version = getPaletteVersion(tTexture);
 		if (texture->mPaletteVersion == version) return;
+		const int isRepaletted = !isMadeLate && texture->mPaletteVersion != -1;
 
 		C3D_Tex* tex = &texture->mTex;
 		u16* dst = (u16*)tex->data;
@@ -446,6 +447,10 @@ namespace prism {
 		texture->mPaletteVersion = version;
 		countTexture(start, w, h);
 		if (isMadeLate) gN3DSPerf.mLateTextureTicks += getN3DSPerfTicks() - start;
+		else if (isRepaletted) {
+			gN3DSPerf.mRepaletted++;
+			gN3DSPerf.mRepalettedTicks += getN3DSPerfTicks() - start;
+		}
 	}
 
 	// ==========================================================================

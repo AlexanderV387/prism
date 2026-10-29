@@ -85,6 +85,10 @@ void setMugenAnimationHandlerPixelCenter(const Vector2D& tPixelCenter)
 // whose memory is no longer to be read.
 static std::unordered_set<MugenAnimationHandlerElement*> gLiveMugenAnimations;
 
+int getMugenAnimationHandlerLiveAmount() {
+	return int(gLiveMugenAnimations.size());
+}
+
 static void loadMugenAnimationHandler(void* tData) {
 	(void)tData;
 	setProfilingSectionMarkerCurrentFunction();

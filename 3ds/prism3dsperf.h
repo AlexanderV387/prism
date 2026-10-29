@@ -33,6 +33,9 @@ namespace prism {
 		uint32_t mLateTextures;
 		uint64_t mLateTextureTicks;
 		uint32_t mEvictedTextures;
+		// Paletted textures made again for a palette that changed.
+		uint32_t mRepaletted;
+		uint64_t mRepalettedTicks;
 	} N3DSPerfCounters;
 
 	extern N3DSPerfCounters gN3DSPerf;
@@ -48,12 +51,15 @@ namespace prism {
 
 	// Ways of reading a sprite file: 0 small reads through newlib's buffer,
 	// 1 the same with a 64 KB buffer, 2 the whole file at once into memory.
-	// 3 the portraits alone, where the portrait cache says they are.
-	enum { N3DS_SPRITE_READ_PLAIN, N3DS_SPRITE_READ_BIG_BUFFER, N3DS_SPRITE_READ_WHOLE, N3DS_SPRITE_READ_PORTRAITS, N3DS_SPRITE_READ_AMOUNT };
+	// 3 the portraits alone, where the portrait cache says they are. 4 a
+	// megabyte at a time.
+	enum { N3DS_SPRITE_READ_PLAIN, N3DS_SPRITE_READ_BIG_BUFFER, N3DS_SPRITE_READ_WHOLE, N3DS_SPRITE_READ_PORTRAITS, N3DS_SPRITE_READ_WINDOWED, N3DS_SPRITE_READ_AMOUNT };
 
 	// A frame shown (drawing_3ds.cpp): its time counts for the screen's
-	// frame statistics.
-	void addN3DSPerfFrame();
+	// frame statistics, with its parts: waiting in C3D_FrameBegin (for the
+	// GPU and the screen), making the drawing on the CPU, the sprites and
+	// the batches they went in.
+	void addN3DSPerfFrame(uint64_t tWaitTicks, uint64_t tDrawTicks, int tSprites, int tBatches);
 
 	// The compatibility log (sdmc:/3ds/dolmexica/compat-log.txt): per
 	// section (a character, a fight), the game's lines and the warnings

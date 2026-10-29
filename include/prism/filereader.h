@@ -25,6 +25,7 @@ struct FileReader {
 
 FileReader getBufferFileReader();
 FileReader getFileFileReader();
+FileReader getWindowedFileFileReader();
 
 void initBufferFileReaderReadOnlyBuffer(FileReader* tReader, const Buffer& tBuffer);
 

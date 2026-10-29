@@ -153,6 +153,8 @@ void setMugenAnimationCallback(MugenAnimationHandlerElement* tElement, void(*tFu
 int getMugenAnimationAnimationNumber(MugenAnimationHandlerElement* tElement);
 int getMugenAnimationAnimationStep(MugenAnimationHandlerElement* tElement);
 int getMugenAnimationAnimationStepAmount(MugenAnimationHandlerElement* tElement);
+// The animations there are now (for the 3DS load log).
+int getMugenAnimationHandlerLiveAmount();
 int getMugenAnimationAnimationStepDuration(MugenAnimationHandlerElement* tElement);
 int getMugenAnimationRemainingAnimationTime(MugenAnimationHandlerElement* tElement);
 int hasMugenAnimationLooped(MugenAnimationHandlerElement* tElement);

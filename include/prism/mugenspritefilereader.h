@@ -59,6 +59,11 @@ void setMugenSpriteFileReaderToUsePalette(int tPaletteID);
 void setMugenSpriteFileReaderToNotUsePalette();
 void setMugenSpriteFileReaderCustomFunctionsAndForceARGB16(TextureData(*mCustomLoadTextureFromARGB16Buffer)(const Buffer&, int, int), TextureData(*mCustomLoadTextureFromARGB32Buffer)(const Buffer&, int, int), TextureData(*mCustomLoadPalettedTextureFrom8BitBuffer)(const Buffer&, int, int, int));
 void setMugenSpriteFileReaderSubTextureSplit(int tSubTextureSplitMin, int tSubTextureSplitMax);
+#ifdef __3DS__
+// [3DS] The heap kept free while loading sprites (sprites that would take it
+// are left out).
+void setMugenSpriteFileReaderHeapReserve(size_t tReserve);
+#endif
 
 int hasMugenSprite(MugenSpriteFile* tSprites, int tGroup, int tSprite);
 void remapMugenSpriteFilePalette(MugenSpriteFile* tSprites, const Vector2DI& tSource, const Vector2DI& tDestination, int tPaletteID);
