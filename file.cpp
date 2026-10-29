@@ -8,6 +8,12 @@
 #include "prism/system.h"
 #include "prism/debug.h"
 
+#ifdef __3DS__
+#include <string.h>
+#include "prism/windows/romdisk_win.h"
+#include "3ds/prism3dsperf.h"
+#endif
+
 #ifdef _WIN32
 #include <imgui/imgui.h>
 #include "prism/windows/debugimgui_win.h"
@@ -154,6 +160,23 @@ namespace prism {
 	}
 
 	int isFile(const char* tPath) {
+#ifdef __3DS__
+		// [3DS] One trip to the SD card instead of three (a stat, an open and
+		// a close: some 10 ms each), none for a folder's path (Dolmexica asks
+		// for st0 to st99 of every character, mostly empty: 1 s per character).
+		const size_t length = strlen(tPath);
+		if (!length || tPath[length - 1] == '/') return 0;
+		char fullPath[1024];
+		getFullPath(fullPath, tPath);
+		if (!isRomdiskPath(fullPath)) {
+			struct stat sb;
+			const uint64_t statStart = getN3DSPerfTicks();
+			const int isRegularFile = stat(fullPath, &sb) == 0 && S_ISREG(sb.st_mode);
+			gN3DSPerf.mStatTicks += getN3DSPerfTicks() - statStart;
+			gN3DSPerf.mStats++;
+			return isRegularFile;
+		}
+#endif
 		if (isDirectory(tPath)) return 0;
 
 		FileHandler file = fileOpen(tPath, O_RDONLY);

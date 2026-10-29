@@ -65,6 +65,7 @@ namespace prism {
 		r.mOpenTicks = a.mOpenTicks - b.mOpenTicks; r.mReadTicks = a.mReadTicks - b.mReadTicks; r.mSeekTicks = a.mSeekTicks - b.mSeekTicks;
 		r.mOpens = a.mOpens - b.mOpens; r.mReads = a.mReads - b.mReads; r.mSeeks = a.mSeeks - b.mSeeks;
 		r.mReadBytes = a.mReadBytes - b.mReadBytes;
+		r.mStatTicks = a.mStatTicks - b.mStatTicks; r.mStats = a.mStats - b.mStats;
 		r.mTextureTicks = a.mTextureTicks - b.mTextureTicks; r.mTextures = a.mTextures - b.mTextures; r.mTexels = a.mTexels - b.mTexels;
 		r.mDefTicks = a.mDefTicks - b.mDefTicks; r.mDefs = a.mDefs - b.mDefs;
 		r.mSoundTicks = a.mSoundTicks - b.mSoundTicks; r.mSounds = a.mSounds - b.mSounds;
@@ -95,12 +96,12 @@ namespace prism {
 		gPerf.mIsLoading = 0;
 		const double total = getN3DSPerfMilliseconds(getN3DSPerfTicks() - gPerf.mLoadStart);
 		const N3DSPerfCounters c = subtract(gN3DSPerf, gPerf.mLoadCounters);
-		const double io = getN3DSPerfMilliseconds(c.mOpenTicks + c.mReadTicks + c.mSeekTicks);
+		const double io = getN3DSPerfMilliseconds(c.mOpenTicks + c.mReadTicks + c.mSeekTicks + c.mStatTicks);
 		const double tex = getN3DSPerfMilliseconds(c.mTextureTicks);
 		const double def = getN3DSPerfMilliseconds(c.mDefTicks);
 		const double snd = getN3DSPerfMilliseconds(c.mSoundTicks);
-		addN3DSPerfLine("screen %d: loaded in %.0f ms | SD %.0f ms (%u opens %.0f ms, %u reads %.0f ms, %u seeks %.0f ms, %.0f KB) | textures %.0f ms (%u, %.1f Mtexels) | .def parsing %.0f ms (%u) | sounds %.0f ms (%u) | rest %.0f ms",
-			gPerf.mScreen, total, io, c.mOpens, getN3DSPerfMilliseconds(c.mOpenTicks), c.mReads, getN3DSPerfMilliseconds(c.mReadTicks),
+		addN3DSPerfLine("screen %d: loaded in %.0f ms | SD %.0f ms (%u file checks %.0f ms, %u opens %.0f ms, %u reads %.0f ms, %u seeks %.0f ms, %.0f KB) | textures %.0f ms (%u, %.1f Mtexels) | .def parsing %.0f ms (%u) | sounds %.0f ms (%u) | rest %.0f ms",
+			gPerf.mScreen, total, io, c.mStats, getN3DSPerfMilliseconds(c.mStatTicks), c.mOpens, getN3DSPerfMilliseconds(c.mOpenTicks), c.mReads, getN3DSPerfMilliseconds(c.mReadTicks),
 			c.mSeeks, getN3DSPerfMilliseconds(c.mSeekTicks), c.mReadBytes / 1024.0, tex, c.mTextures, c.mTexels / 1e6,
 			def, c.mDefs, snd, c.mSounds, total - io - tex - def - snd);
 		const auto info = mallinfo();

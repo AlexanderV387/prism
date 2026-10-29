@@ -14,6 +14,9 @@ namespace prism {
 		uint32_t mOpens, mReads, mSeeks;
 		uint64_t mReadBytes;
 
+		uint64_t mStatTicks;   // isFile's look on the SD card
+		uint32_t mStats;
+
 		uint64_t mTextureTicks;
 		uint32_t mTextures;
 		uint64_t mTexels;
