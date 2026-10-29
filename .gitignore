@@ -53,3 +53,7 @@ build_3ds/
 bin_3ds/
 bin_linux/
 build_linux/
+
+# Build output of Makefile.n3dssim (the 3DS texture simulation)
+build_n3dssim/
+bin_n3dssim/
