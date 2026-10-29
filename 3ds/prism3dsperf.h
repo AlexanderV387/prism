@@ -47,4 +47,16 @@ namespace prism {
 	// frame statistics.
 	void addN3DSPerfFrame();
 
+	// The compatibility log (sdmc:/3ds/dolmexica/compat-log.txt): per
+	// section (a character, a fight), the game's lines and the warnings
+	// logged meanwhile, each once with how often. Written whenever a section
+	// begins or ends, so a crash leaves what was loading.
+	void beginN3DSCompatSection(const char* tName);
+	void addN3DSCompatLine(const char* tFormat, ...);
+	void endN3DSCompatSection();
+
+	// Memory, for the logs: the heap in use, the textures' (linear) memory free.
+	int getN3DSHeapUsedKB();
+	int getN3DSLinearFreeKB();
+
 }

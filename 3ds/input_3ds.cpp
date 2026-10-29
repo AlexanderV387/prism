@@ -80,6 +80,7 @@ namespace prism {
 	int hasPressedLSingle(int i) { return pressed(i, CONTROLLER_L_PRISM); }
 	int hasPressedRSingle(int i) { return pressed(i, CONTROLLER_R_PRISM); }
 	int hasPressedStartSingle(int i) { return pressed(i, CONTROLLER_START_PRISM); }
+	int hasPressedN3DSSelectSingle(int i) { return !i && (gPrismN3DSInputData.mHeld & KEY_SELECT); }
 
 	// No quitting by buttons: the HOME Menu closes the game.
 	int hasPressedAbortSingle(int /*i*/) { return 0; }

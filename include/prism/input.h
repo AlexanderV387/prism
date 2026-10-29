@@ -159,6 +159,10 @@ int hasPressedDownSingle(int i);
 int hasPressedLSingle(int i);
 int hasPressedRSingle(int i);
 int hasPressedStartSingle(int i);
+#ifdef __3DS__
+// [3DS] SELECT, outside the buttons the game maps.
+int hasPressedN3DSSelectSingle(int i);
+#endif
 int hasPressedAbortSingle(int i);
 
 int hasPressedAFlankSingle(int i);

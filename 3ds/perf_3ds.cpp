@@ -4,6 +4,8 @@
 #include <stdarg.h>
 #include <string.h>
 #include <string>
+#include <vector>
+#include <map>
 #include <malloc.h>
 
 #include <3ds.h>
@@ -13,6 +15,11 @@
 #ifndef N3DS_PERF_FILE
 #define N3DS_PERF_FILE "sdmc:/3ds/dolmexica/load-log.txt"
 #endif
+#ifndef N3DS_COMPAT_FILE
+#define N3DS_COMPAT_FILE "sdmc:/3ds/dolmexica/compat-log.txt"
+#endif
+
+#define N3DS_COMPAT_MAXIMUM_WARNINGS 300
 
 namespace prism {
 
@@ -35,6 +42,19 @@ namespace prism {
 		uint32_t mSlowFrames;   // over 17 ms
 		uint32_t mVerySlowFrames;   // over 34 ms
 	} gPerf;
+
+	typedef struct {
+		std::string mName;
+		std::vector<std::string> mLines;
+		std::vector<std::pair<std::string, int>> mWarnings;
+		std::map<std::string, int> mWarningIndices;
+		int mDroppedWarnings;
+	} CompatSection;
+
+	static struct {
+		std::vector<CompatSection> mSections;
+		int mCurrent = -1;
+	} gCompat;
 
 	uint64_t getN3DSPerfTicks() { return svcGetSystemTick(); }
 	double getN3DSPerfMilliseconds(uint64_t tTicks) { return tTicks / (double)SYSCLOCK_ARM11 * 1000.0; }
@@ -110,12 +130,91 @@ namespace prism {
 		gPerf.mLastFrame = 0;
 	}
 
-	// Every log entry (whatever the log's level), as a timeline: the load's
-	// steps ("Loading sprite file", the fight's "init players"...).
+	// ==========================================================================
+	// The compatibility log.
+
+	static void writeCompatLog() {
+		FILE* file = fopen(N3DS_COMPAT_FILE, "w");
+		if (!file) return;
+		fputs("compatibility log: per character and fight, what the game said and the warnings meanwhile (each once, with how often)\n", file);
+		for (const auto& section : gCompat.mSections) {
+			fprintf(file, "\n== %s\n", section.mName.c_str());
+			for (const auto& line : section.mLines) fprintf(file, "  %s\n", line.c_str());
+			if (!section.mWarnings.empty()) fprintf(file, "  warnings (%d different):\n", (int)section.mWarnings.size());
+			for (const auto& warning : section.mWarnings) fprintf(file, "    %5dx %s\n", warning.second, warning.first.c_str());
+			if (section.mDroppedWarnings) fprintf(file, "    (and %d more different ones)\n", section.mDroppedWarnings);
+		}
+		fclose(file);
+	}
+
+	static int findCompatSection(const char* tName) {
+		for (size_t i = 0; i < gCompat.mSections.size(); i++) {
+			if (gCompat.mSections[i].mName == tName) return (int)i;
+		}
+		CompatSection section;
+		section.mName = tName;
+		section.mDroppedWarnings = 0;
+		gCompat.mSections.push_back(section);
+		return (int)gCompat.mSections.size() - 1;
+	}
+
+	void beginN3DSCompatSection(const char* tName) {
+		gCompat.mCurrent = findCompatSection(tName);
+		gCompat.mSections[gCompat.mCurrent].mLines.push_back("(loading...)");
+		writeCompatLog();
+		gCompat.mSections[gCompat.mCurrent].mLines.pop_back();
+	}
+
+	void addN3DSCompatLine(const char* tFormat, ...) {
+		if (gCompat.mCurrent < 0) gCompat.mCurrent = findCompatSection("outside a character");
+		char line[512];
+		va_list args;
+		va_start(args, tFormat);
+		vsnprintf(line, sizeof(line), tFormat, args);
+		va_end(args);
+		auto& lines = gCompat.mSections[gCompat.mCurrent].mLines;
+		lines.push_back(line);
+		if (lines.size() > 12) lines.erase(lines.begin());   // a character in many fights
+	}
+
+	int getN3DSHeapUsedKB() { return (int)(mallinfo().uordblks / 1024); }
+	int getN3DSLinearFreeKB() { return (int)(linearSpaceFree() / 1024); }
+
+	void endN3DSCompatSection() {
+		writeCompatLog();
+		gCompat.mCurrent = -1;
+	}
+
+	static void addCompatWarning(const LogEntry& tEntry) {
+		if (gCompat.mCurrent < 0) gCompat.mCurrent = findCompatSection("outside a character");
+		auto& section = gCompat.mSections[gCompat.mCurrent];
+		std::string text = tEntry.mText;
+		while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+		if (tEntry.mType == LOG_TYPE_ERROR) text = "ERROR " + text;
+		const auto it = section.mWarningIndices.find(text);
+		if (it != section.mWarningIndices.end()) {
+			section.mWarnings[it->second].second++;
+		}
+		else if ((int)section.mWarnings.size() < N3DS_COMPAT_MAXIMUM_WARNINGS) {
+			section.mWarningIndices[text] = (int)section.mWarnings.size();
+			section.mWarnings.push_back(std::make_pair(text, 1));
+			// A new one in a fight: written at once, in case it crashes next.
+			if (!gPerf.mIsLoading) writeCompatLog();
+		}
+		else {
+			section.mDroppedWarnings++;
+		}
+	}
+
+	// Every log entry (whatever the log's level): while loading, as a
+	// timeline of the load's steps ("Loading sprite file", the fight's
+	// "init players"...); warnings and errors also to the compatibility log.
 	static void logCallback(void* /*tCaller*/, const LogEntry& tEntry) {
 		const char* text = tEntry.mText;
+		if (tEntry.mType >= LOG_TYPE_WARNING) addCompatWarning(tEntry);
 		if (strstr(text, "StateMachineStateChange")) return;   // every move in a fight
 		if (strstr(text, "Loading handled screen")) startLoad();
+		if (!gPerf.mIsLoading && !strstr(text, "Unloading handled screen")) return;
 
 		const char* message = strchr(text, ']');
 		message = message ? message + 2 : text;
@@ -125,7 +224,10 @@ namespace prism {
 		while (length && (line[length - 1] == '\n' || line[length - 1] == '\r')) line[--length] = '\0';
 		addN3DSPerfLine("%s", line);
 
-		if (strstr(text, "Show screen")) endLoad();
+		if (strstr(text, "Show screen")) {
+			endLoad();
+			if (gCompat.mCurrent >= 0) writeCompatLog();
+		}
 	}
 
 	void initN3DSPerf() {
