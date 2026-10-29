@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <algorithm>
+#include <string>
 
 #include "prism/file.h"
 #include "prism/memoryhandler.h"
@@ -609,16 +610,16 @@ static void setVectorElement(MugenDefScriptGroupElement* element, MugenDefToken*
 	comma = t->mValue - 1;
 	int i = 0;
 	while (comma != NULL) {
-		char temp[MUGEN_DEF_STRING_LENGTH];
-		assert(strlen(comma + 1) < MUGEN_DEF_STRING_LENGTH);
-		strcpy(temp, comma+1);
-		char* tempComma = strchr(temp, ',');
-		if (tempComma != NULL) *tempComma = '\0';
+		// As long as the line is (a line over 500 characters, in Lei-lei's
+		// states, stopped the game here).
+		std::string temp(comma + 1);
+		const size_t tempComma = temp.find(',');
+		if (tempComma != std::string::npos) temp.resize(tempComma);
 		comma = strchr(comma + 1, ',');
 
-		int offset = 0;
-		while (temp[offset] == ' ') offset++;
-		char* start = temp + offset;
+		size_t offset = 0;
+		while (offset < temp.size() && temp[offset] == ' ') offset++;
+		const char* start = temp.c_str() + offset;
 
 		e->mVector.mElement[i] = (char*)allocMemory(int(strlen(start) + 3));
 		strcpy(e->mVector.mElement[i], start);
