@@ -29,8 +29,8 @@
 // - blending: normal, addition and subtraction (the destination times its
 //   transparency, plus or minus the source times its alpha, as Windows's
 //   shader), or the source alone ("one");
-// - texels with alpha 0 are never drawn (in additive blending the
-//   destination would be dimmed there).
+// - texels with alpha 0 are not drawn (in additive blending the
+//   destination would be dimmed there), except in "one" blending.
 
 namespace prism {
 
@@ -164,8 +164,6 @@ namespace prism {
 
 		C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
 		C3D_CullFace(GPU_CULL_NONE);
-		C3D_AlphaTest(true, GPU_GREATER, 0);
-
 		for (int i = 0; i < 4; i++) gN3DSPaletteVersions[i] = 0;
 
 		updateScreenTransform();
@@ -309,6 +307,10 @@ namespace prism {
 		if (!hasOffset || tState.mIsColorSolid) {
 			C3D_TexEnvInit(C3D_GetTexEnv(1));
 		}
+
+		// "One" draws every texel, the transparent color too (MUGEN's mask = 0:
+		// a storyboard's white paper, a title screen's background).
+		C3D_AlphaTest(tState.mBlendType != BLEND_TYPE_ONE, GPU_GREATER, 0);
 
 		switch (tState.mBlendType) {
 		case BLEND_TYPE_ADDITION:
