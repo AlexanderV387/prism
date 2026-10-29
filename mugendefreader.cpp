@@ -273,9 +273,31 @@ static void parseTextStatement(Buffer* b, BufferPointer* p) {
 	}
 }
 
+static BufferPointer findEndOfGroupToken(Buffer* b, BufferPointer p) {
+	BufferPointer end = p;
+	while ((uintptr_t)end + 1 < (uintptr_t)b->mData + b->mLength && *end != ']' && end[1] != '\r' && end[1] != '\n') end++;
+	return end;
+}
+
 static void parseGroup(Buffer* b, BufferPointer* p) {
 	verboseLog("Parse group.");
-	BufferPointer end = findEndOfToken(b, *p, '[', ']', 0);
+	// A group without its "]" (as "[State -2, Blocking-12" in CvS Cammy)
+	// ends with its line, as in MUGEN.
+	BufferPointer end = findEndOfGroupToken(b, *p);
+	if (*end != ']') {
+		logWarningFormat("Group without its ], ended with its line: %.60s", (char*)*p);
+		char* line = makeMugenDefStringFromEndPoint(*p, end);
+		std::string closed = std::string(line) + "]";
+		destroyMugenDefString(line);
+		MugenDefToken* groupToken = makeMugenDefToken(closed.c_str());
+		turnStringLowercase(groupToken->mValue);
+		gTokenReader.mCurrentGroupToken = groupToken;
+		addTokenToTokenReader(groupToken);
+		if (increasePointerToNextLine(b, p)) {
+			setTokenReaderOver();
+		}
+		return;
+	}
 
 	char* val = makeMugenDefStringFromEndPoint(*p, end);
 	MugenDefToken* groupToken = makeMugenDefToken(val);
