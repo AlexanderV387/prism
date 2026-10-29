@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <exception>
 
 #include <3ds.h>
 
@@ -29,8 +30,17 @@ namespace prism {
 		gfxExit();
 	}
 
+	// An uncaught C++ error: logged, then the game stops as on any other error
+	// (std::terminate's abort would end it without a word, the sound still
+	// playing as the memory goes: a crash in the sound thread).
+	static void terminateN3DS() {
+		logError("Uncaught C++ error.");
+		abortSystem();
+	}
+
 	void initSystem() {
 		if (gSystemN3DSData.mIsLoaded) return;
+		std::set_terminate(terminateN3DS);
 		osSetSpeedupEnable(true);
 		gfxInitDefault();
 		// The log on the bottom screen too (printf), while the port is young.
@@ -105,4 +115,13 @@ namespace prism {
 		return osGetTime() - 2208988800000ULL;
 	}
 
+}
+
+// A failed assertion, the same way: logged (file, line, what failed), then the
+// game stops as on any other error, instead of newlib's silent abort.
+extern "C" __attribute__((noreturn)) void __assert_func(const char* tFile, int tLine, const char* tFunction, const char* tExpression) {
+	using namespace prism;
+	logErrorFormat("Assertion failed: %s (%s, %s line %d)", tExpression, tFunction ? tFunction : "", tFile, tLine);
+	abortSystem();
+	while (1) {}
 }
