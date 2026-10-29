@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <unordered_set>
 #include <cassert>
 
 #include "prism/collisionhandler.h"
@@ -79,10 +80,16 @@ void setMugenAnimationHandlerPixelCenter(const Vector2D& tPixelCenter)
 	gMugenAnimationHandler.mPixelCenter = tPixelCenter;
 }
 
+// The animations there are, by address: isRegisteredMugenAnimation can be
+// asked about one already removed (Dolmexica's palette effects keep theirs),
+// whose memory is no longer to be read.
+static std::unordered_set<MugenAnimationHandlerElement*> gLiveMugenAnimations;
+
 static void loadMugenAnimationHandler(void* tData) {
 	(void)tData;
 	setProfilingSectionMarkerCurrentFunction();
 	stl_new_map(gMugenAnimationHandler.mAnimations);
+	gLiveMugenAnimations.clear();
 	gMugenAnimationHandler.mIsPaused = 0;
 }
 
@@ -100,6 +107,7 @@ static void unloadMugenAnimationHandler(void* tData) {
 	setProfilingSectionMarkerCurrentFunction();
 	stl_int_map_remove_predicate(gMugenAnimationHandler.mAnimations, unloadSingleMugenAnimationCB);
 	stl_delete_map(gMugenAnimationHandler.mAnimations);
+	gLiveMugenAnimations.clear();
 }
 
 static MugenAnimationStep* getCurrentAnimationStep(MugenAnimationHandlerElement* e) {
@@ -354,17 +362,19 @@ MugenAnimationHandlerElement* addMugenAnimation(MugenAnimation* tStartAnimation,
 	int id = stl_int_map_push_back(gMugenAnimationHandler.mAnimations, e);
 	auto& ret = gMugenAnimationHandler.mAnimations[id];
 	ret.mID = id;
+	gLiveMugenAnimations.insert(&ret);
 	return &ret;
 }
 
 void removeMugenAnimation(MugenAnimationHandlerElement* e)
 {
 	unloadMugenAnimation(e);
+	gLiveMugenAnimations.erase(e);
 	gMugenAnimationHandler.mAnimations.erase(e->mID);
 }
 
 int isRegisteredMugenAnimation(MugenAnimationHandlerElement* e) {
-	return stl_map_contains(gMugenAnimationHandler.mAnimations, e->mID);
+	return gLiveMugenAnimations.count(e) != 0;
 }
 
 int getMugenAnimationAnimationNumber(MugenAnimationHandlerElement* e)
@@ -886,7 +896,9 @@ static int updateSingleMugenAnimationCB(void* tCaller, MugenAnimationHandlerElem
 	(void)tCaller;
 	MugenAnimationHandlerElement* e = &tData;
 
-	return updateSingleMugenAnimation(e);
+	const int isRemoved = updateSingleMugenAnimation(e);
+	if (isRemoved) gLiveMugenAnimations.erase(e);
+	return isRemoved;
 }
 
 void advanceMugenAnimationOneTick(MugenAnimationHandlerElement* e)

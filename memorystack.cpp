@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include <prism/memoryhandler.h>
+#include <prism/log.h>
 
 namespace prism {
 
@@ -22,16 +23,26 @@ namespace prism {
 	}
 
 	void resizeMemoryStackToCurrentSize(MemoryStack* tStack) {
-		if (tStack->mOffset == tStack->mSize) return;
-
-		tStack->mAddress = reallocMemory(tStack->mAddress, tStack->mOffset);
-		tStack->mSize = tStack->mOffset;
+		// Not shrunk: realloc may move the block, and what was allocated on
+		// it keeps pointing at the old one (found with AddressSanitizer).
+		(void)tStack;
 	}
 
 	void* allocMemoryOnMemoryStack(MemoryStack* tStack, uint32_t tSize)
 	{
-		void* ret = (void*)((uintptr_t)tStack->mAddress + tStack->mOffset);
 		const auto padding = (4 - (tSize % 4)) % 4;
+		if (tStack->mOffset + tSize + padding > tStack->mSize) {
+			// Full: on its own (freed with the rest of the screen's memory),
+			// not past the stack's end.
+			static int hasWarned = 0;
+			if (!hasWarned) {
+				logWarningFormat("Memory stack of %u bytes full: allocating outside it.", (unsigned)tStack->mSize);
+				hasWarned = 1;
+			}
+			tStack->mAmount++;
+			return allocMemory(tSize);
+		}
+		void* ret = (void*)((uintptr_t)tStack->mAddress + tStack->mOffset);
 		tStack->mOffset += tSize + padding;
 
 		tStack->mAmount++;

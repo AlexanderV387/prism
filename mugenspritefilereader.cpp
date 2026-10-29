@@ -25,6 +25,9 @@
 #ifdef __3DS__
 #include "3ds/prism3dsperf.h"
 #endif
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+#include "3ds/prism3ds.h"
+#endif
 
 #ifdef _WIN32
 #include <imgui/imgui.h>
@@ -281,6 +284,26 @@ static TextureData loadTextureFromPalettedImageData1bppTo32ARGB(const Buffer& tP
 }
 
 static TextureData loadTextureFromPalettedImageData1bpp(const Buffer& tPCXImageBuffer, const Buffer& tPaletteBuffer, int w, int h) {
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+	// [3DS] A paletted texture with its own palette (half the memory of
+	// ARGB32, and let go and made again when memory runs short), when its
+	// colors are all or nothing transparent (always so in RGB palettes).
+	{
+		const uint8_t* pal = (const uint8_t*)tPaletteBuffer.mData;
+		u32 colors[256];
+		int isAllOrNothing = 1;
+		if (isRGBPalette(tPaletteBuffer)) {
+			for (int i = 0; i < 256; i++) colors[i] = ((u32)pal[i * 3 + 0] << 24) | ((u32)pal[i * 3 + 1] << 16) | ((u32)pal[i * 3 + 2] << 8) | (i ? 0xFF : 0);
+		}
+		else {
+			for (int i = 0; i < 256; i++) {
+				colors[i] = ((u32)pal[i * 4 + 1] << 24) | ((u32)pal[i * 4 + 2] << 16) | ((u32)pal[i * 4 + 3] << 8) | pal[i * 4 + 0];
+				if (pal[i * 4 + 0] != 0 && pal[i * 4 + 0] != 0xFF) isAllOrNothing = 0;
+			}
+		}
+		if (isAllOrNothing) return loadN3DSTextureWithOwnPalette(tPCXImageBuffer, colors, w, h);
+	}
+#endif
 	if (isOnDreamcast() || gPrismMugenSpriteFileReaderData.mIsWritingDreamcastOptimized) {
 		return loadTextureFromPalettedImageData1bppTo16ARGB(tPCXImageBuffer, tPaletteBuffer, w, h);
 	}
@@ -471,6 +494,15 @@ static const int VITA_MAXIMUM_TEXTURE_DIMENSION = 4096;
 static int getMaximumSizeFit(int tVal) {
 #if defined(VITA)
 	return min(tVal, VITA_MAXIMUM_TEXTURE_DIMENSION);
+#elif defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+	// [3DS] Pieces of the image's own size, the texture padding them to
+	// powers of two, when that wastes at most half: a CvS sprite in 2.2
+	// pieces instead of 9 (each piece a draw), for 14% more texels.
+	if (tVal > 1024) return 1024;
+	int powerOfTwo = 8;
+	while (powerOfTwo < tVal) powerOfTwo *= 2;
+	if (powerOfTwo * 2 <= tVal * 3 || tVal <= 8) return tVal;
+	return powerOfTwo / 2;
 #else
 	const int mini = gPrismMugenSpriteFileReaderData.mSubTextureSplitMin;
 	const int maxi = gPrismMugenSpriteFileReaderData.mSubTextureSplitMax;

@@ -67,12 +67,13 @@ namespace prism {
 #define virtualizeTextureHW virtualizeTextureDreamcast
 #define unvirtualizeTextureHW unvirtualizeTextureDreamcast
 
-#elif defined(__3DS__)
+#elif defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 	void* allocN3DSTexture(size_t) {
 		N3DSTextureData* data = (N3DSTextureData*)malloc(sizeof(N3DSTextureData));
 		data->mIsInitialized = 0;
 		data->mIndexed = NULL;
 		data->mIndexedSize = 0;
+		data->mOwnPalette = -1;
 		data->mPaletteVersion = -1;
 		data->mLastUsedFrame = 0;
 		return data;

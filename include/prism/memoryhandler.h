@@ -9,7 +9,7 @@
 namespace prism {
 typedef pvr_ptr_t Texture;
 
-#elif defined(__3DS__)
+#elif defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 #include <citro3d.h>
 
 namespace prism {
@@ -24,6 +24,7 @@ typedef struct {
 	int mIsInitialized;
 	unsigned char* mIndexed;
 	int mIndexedSize;
+	int mOwnPalette;   // its own palette (texture_3ds.cpp's table), or -1: prism's
 	int mPaletteVersion;
 	unsigned int mLastUsedFrame;
 } N3DSTextureData;

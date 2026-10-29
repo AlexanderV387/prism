@@ -22,6 +22,14 @@ namespace prism {
 	// made first if they were let go or had no room when loaded).
 	void prepareN3DSTexture(const TextureData& tTexture);
 
+	// A paletted texture with its own palette (RGBA8 colors, a sprite's own
+	// in its SFF): kept and made again as prism's paletted ones, at half the
+	// memory of the ARGB32 texture it would be otherwise.
+	TextureData loadN3DSTextureWithOwnPalette(const Buffer& b, const u32* tRGBAPalette, int tWidth, int tHeight);
+
+	// The palette a paletted texture's texels are made with (RGBA5551).
+	void getN3DSTexturePalette(const TextureData& tTexture, u16* oColors);
+
 	// A new frame (drawing_3ds.cpp): textures drawn in it, or the one
 	// before, keep their texels.
 	void advanceN3DSTextureFrame();

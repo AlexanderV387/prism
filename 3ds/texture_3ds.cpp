@@ -5,6 +5,7 @@
 #include <png.h>
 
 #include <algorithm>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -191,7 +192,82 @@ namespace prism {
 
 	void advanceN3DSTextureFrame() { gN3DSTextureFrame++; }
 
-	void forgetN3DSTexture(N3DSTextureData* tTexture) { gResidentTextures.erase(tTexture); }
+	// Paletted textures' own palettes (a sprite's in its SFF, not one of
+	// prism's 4), as RGBA5551, each kept once for all its textures.
+	typedef struct {
+		u16 mColors[256];
+		int mReferences;
+	} OwnPalette;
+	static std::vector<OwnPalette> gOwnPalettes;
+	static std::unordered_multimap<uint32_t, int> gOwnPaletteIndices;   // by a hash of the colors
+
+	static uint32_t hashColors(const u16* tColors) {
+		uint32_t hash = 2166136261u;
+		for (int i = 0; i < 256; i++) hash = (hash ^ tColors[i]) * 16777619u;
+		return hash;
+	}
+
+	static int addOwnPalette(const u16* tColors) {
+		const uint32_t hash = hashColors(tColors);
+		const auto range = gOwnPaletteIndices.equal_range(hash);
+		for (auto it = range.first; it != range.second; ++it) {
+			auto& palette = gOwnPalettes[it->second];
+			if (palette.mReferences && !memcmp(palette.mColors, tColors, sizeof(palette.mColors))) {
+				palette.mReferences++;
+				return it->second;
+			}
+		}
+		int index = -1;
+		for (size_t i = 0; i < gOwnPalettes.size(); i++) {
+			if (!gOwnPalettes[i].mReferences) { index = (int)i; break; }
+		}
+		if (index < 0) {
+			gOwnPalettes.push_back(OwnPalette());
+			index = (int)gOwnPalettes.size() - 1;
+		}
+		else {
+			const uint32_t oldHash = hashColors(gOwnPalettes[index].mColors);
+			const auto old = gOwnPaletteIndices.equal_range(oldHash);
+			for (auto it = old.first; it != old.second; ++it) {
+				if (it->second == index) { gOwnPaletteIndices.erase(it); break; }
+			}
+		}
+		memcpy(gOwnPalettes[index].mColors, tColors, sizeof(gOwnPalettes[index].mColors));
+		gOwnPalettes[index].mReferences = 1;
+		gOwnPaletteIndices.insert(std::make_pair(hash, index));
+		return index;
+	}
+
+	void forgetN3DSTexture(N3DSTextureData* tTexture) {
+		gResidentTextures.erase(tTexture);
+		if (tTexture->mOwnPalette >= 0 && tTexture->mOwnPalette < (int)gOwnPalettes.size()) {
+			gOwnPalettes[tTexture->mOwnPalette].mReferences--;
+			tTexture->mOwnPalette = -1;
+		}
+	}
+
+	static u16 toRGBA5551(u32 tRGBA) {
+		return (u16)((((tRGBA >> 27) & 0x1F) << 11) | (((tRGBA >> 19) & 0x1F) << 6) | (((tRGBA >> 11) & 0x1F) << 1) | ((tRGBA & 0xFF) >= 0x80));
+	}
+
+	void getN3DSTexturePalette(const TextureData& tTexture, u16* oColors) {
+		const Texture texture = (Texture)tTexture.mTexture->mData;
+		if (texture->mOwnPalette >= 0) {
+			memcpy(oColors, gOwnPalettes[texture->mOwnPalette].mColors, 256 * sizeof(u16));
+			return;
+		}
+		const int id = tTexture.mPaletteID & 3;
+		for (int i = 0; i < 256; i++) oColors[i] = toRGBA5551(gN3DSPalettes[id][i]);
+	}
+
+	// The palette version a texture's texels are up to: its own palette's
+	// never changes.
+	static const int OWN_PALETTE_VERSION = 0x7FFFFFFF;
+
+	static int getPaletteVersion(const TextureData& tTexture) {
+		const Texture texture = (Texture)tTexture.mTexture->mData;
+		return texture->mOwnPalette >= 0 ? OWN_PALETTE_VERSION : gN3DSPaletteVersions[tTexture.mPaletteID & 3];
+	}
 
 	// Runs: a byte n < 128, then n + 1 bytes as they are; a byte n >= 128,
 	// then one byte n - 127 times.
@@ -286,7 +362,21 @@ namespace prism {
 		return 1;
 	}
 
+	static TextureData loadPalettedTextureFrom8BitBufferWithOwnPalette(const Buffer& b, int tPaletteID, int tWidth, int tHeight, int tOwnPalette);
+
+	TextureData loadN3DSTextureWithOwnPalette(const Buffer& b, const u32* tRGBAPalette, int tWidth, int tHeight) {
+		u16 colors[256];
+		for (int i = 0; i < 256; i++) colors[i] = toRGBA5551(tRGBAPalette[i]);
+		const int ownPalette = addOwnPalette(colors);
+		TextureData ret = loadPalettedTextureFrom8BitBufferWithOwnPalette(b, 0, tWidth, tHeight, ownPalette);
+		return ret;
+	}
+
 	TextureData loadPalettedTextureFrom8BitBuffer(const Buffer& b, int tPaletteID, int tWidth, int tHeight) {
+		return loadPalettedTextureFrom8BitBufferWithOwnPalette(b, tPaletteID, tWidth, tHeight, -1);
+	}
+
+	static TextureData loadPalettedTextureFrom8BitBufferWithOwnPalette(const Buffer& b, int tPaletteID, int tWidth, int tHeight, int tOwnPalette) {
 		// RGBA5551: half the memory of RGBA8, and the palettes' alpha is
 		// all or nothing (color 0 transparent).
 		TextureData ret;
@@ -300,6 +390,7 @@ namespace prism {
 		}
 
 		Texture texture = (Texture)ret.mTexture->mData;
+		texture->mOwnPalette = tOwnPalette;
 		texture->mIndexed = compressIndices((const unsigned char*)b.mData, tWidth * tHeight, &texture->mIndexedSize);
 		if (!texture->mIndexed) {
 			logWarning("Out of heap memory: a sprite left out.");
@@ -333,16 +424,13 @@ namespace prism {
 			gN3DSPerf.mLateTextures++;
 			isMadeLate = 1;
 		}
-		const int id = tTexture.mPaletteID & 3;
-		if (texture->mPaletteVersion == gN3DSPaletteVersions[id]) return;
+		const int version = getPaletteVersion(tTexture);
+		if (texture->mPaletteVersion == version) return;
 
 		C3D_Tex* tex = &texture->mTex;
 		u16* dst = (u16*)tex->data;
 		u16 palette[256];
-		for (int i = 0; i < 256; i++) {
-			const u32 c = gN3DSPalettes[id][i];
-			palette[i] = (u16)((((c >> 27) & 0x1F) << 11) | (((c >> 19) & 0x1F) << 6) | (((c >> 11) & 0x1F) << 1) | ((c & 0xFF) >= 0x80));
-		}
+		getN3DSTexturePalette(tTexture, palette);
 		const int w = clampedWidth(tTexture.mTextureSize.x), h = clampedWidth(tTexture.mTextureSize.y);
 		const unsigned char* indices = decompressIndices(texture, tTexture.mTextureSize.x * tTexture.mTextureSize.y);
 
@@ -355,7 +443,7 @@ namespace prism {
 		}
 
 		C3D_TexFlush(tex);
-		texture->mPaletteVersion = gN3DSPaletteVersions[id];
+		texture->mPaletteVersion = version;
 		countTexture(start, w, h);
 		if (isMadeLate) gN3DSPerf.mLateTextureTicks += getN3DSPerfTicks() - start;
 	}
