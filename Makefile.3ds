@@ -32,7 +32,7 @@ all: $(BINDIR)/libprism.a
 
 $(OBJDIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 # The vertex shader, assembled and linked in as data (prism3ds_shbin.h).
 $(OBJDIR)/3ds/prism3ds.shbin: 3ds/prism3ds.v.pica
@@ -50,6 +50,9 @@ $(OBJDIR)/3ds/drawing_3ds.o: $(OBJDIR)/3ds/prism3ds_shbin.h
 $(BINDIR)/libprism.a: $(N3DS_OBJS)
 	@mkdir -p $(BINDIR)
 	$(AR) rcs $@ $(N3DS_OBJS)
+
+# Rebuilt when a header they use changes.
+-include $(shell find $(OBJDIR) -name '*.d' 2>/dev/null)
 
 clean:
 	rm -rf $(OBJDIR) $(BINDIR)

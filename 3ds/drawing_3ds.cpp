@@ -120,6 +120,16 @@ namespace prism {
 
 	// ==========================================================================
 
+	static int gIsFullWidth = 1;
+
+	void setN3DSScreenFullWidth(int tIsFullWidth) { gIsFullWidth = tIsFullWidth; }
+	int isN3DSScreenFullWidth() { return gIsFullWidth; }
+
+	float getN3DSScreenSideMargin() {
+		if (!gIsFullWidth) return 0;
+		return gN3DSDrawingData.mScreenOffset.x / gN3DSDrawingData.mScreenScale.x;
+	}
+
 	static void updateScreenTransform() {
 		const ScreenSize sz = getScreenSize();
 		const float scale = fminf(400 / (float)sz.x, TOP_HEIGHT / (float)sz.y);
@@ -253,13 +263,18 @@ namespace prism {
 	void startDrawing() {
 		C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
 		gN3DSDrawingData.mIsFrameStarted = 1;
-		// Black around the game's screen (as the PC's window, which is just
-		// its size): its background color and sprites only inside it.
+		// In full width, the game over the whole screen; otherwise black
+		// around the game's screen (as the PC's window, which is just its
+		// size): its background color and sprites only inside it.
 		C3D_RenderTargetClear(gN3DSDrawingData.mTop, C3D_CLEAR_ALL, 0x000000FF, 0);
 		C3D_FrameDrawOn(gN3DSDrawingData.mTop);
 		const ScreenSize sz = getScreenSize();
-		const int gameX = (int)gN3DSDrawingData.mScreenOffset.x, gameY = (int)gN3DSDrawingData.mScreenOffset.y;
-		const int gameW = (int)(sz.x * gN3DSDrawingData.mScreenScale.x), gameH = (int)(sz.y * gN3DSDrawingData.mScreenScale.y);
+		int gameX = (int)gN3DSDrawingData.mScreenOffset.x, gameY = (int)gN3DSDrawingData.mScreenOffset.y;
+		int gameW = (int)(sz.x * gN3DSDrawingData.mScreenScale.x), gameH = (int)(sz.y * gN3DSDrawingData.mScreenScale.y);
+		if (gIsFullWidth) {
+			gameX = 0;
+			gameW = TOP_WIDTH;
+		}
 		// (The target is the screen turned on its side.)
 		C3D_SetScissor(GPU_SCISSOR_NORMAL, TOP_HEIGHT - (gameY + gameH), TOP_WIDTH - (gameX + gameW), TOP_HEIGHT - gameY, TOP_WIDTH - gameX);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, gN3DSDrawingData.mProjectionLocation, &gN3DSDrawingData.mProjection);
@@ -422,7 +437,8 @@ namespace prism {
 		gN3DSDrawingData.mVertexAmount += 6;
 	}
 
-	// The background color, over the game's screen (the rest stays black).
+	// The background color, over the game's screen (the rest stays black,
+	// unless in full width).
 	static void drawBackgroundColor() {
 		if (gN3DSClearColor == 0x000000FF) return;
 
@@ -435,8 +451,12 @@ namespace prism {
 		applyDrawState(state);
 
 		const ScreenSize sz = getScreenSize();
-		const float x0 = gN3DSDrawingData.mScreenOffset.x, y0 = gN3DSDrawingData.mScreenOffset.y;
-		const float x1 = x0 + sz.x * gN3DSDrawingData.mScreenScale.x, y1 = y0 + sz.y * gN3DSDrawingData.mScreenScale.y;
+		float x0 = gN3DSDrawingData.mScreenOffset.x, y0 = gN3DSDrawingData.mScreenOffset.y;
+		float x1 = x0 + sz.x * gN3DSDrawingData.mScreenScale.x, y1 = y0 + sz.y * gN3DSDrawingData.mScreenScale.y;
+		if (gIsFullWidth) {
+			x0 = 0;
+			x1 = TOP_WIDTH;
+		}
 		const float r = (gN3DSClearColor >> 24) / 255.0f, g = ((gN3DSClearColor >> 16) & 0xFF) / 255.0f, b = ((gN3DSClearColor >> 8) & 0xFF) / 255.0f;
 		const float corners[6][2] = { { x0, y0 }, { x0, y1 }, { x1, y0 }, { x1, y0 }, { x0, y1 }, { x1, y1 } };
 

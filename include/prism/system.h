@@ -55,6 +55,15 @@ ScreenSize getDisplayedScreenSize();
 void setDisplayedScreenSize(int tX, int tY);
 void setScreenFramerate(int tFramerate);
 
+#ifdef __3DS__
+// [3DS] The top screen is wider than the game's 4:3 one: in full width (the
+// default) it shows the game past its sides, this much on each side, in the
+// game's coordinates; otherwise black sides (0).
+void setN3DSScreenFullWidth(int tIsFullWidth);
+int isN3DSScreenFullWidth();
+float getN3DSScreenSideMargin();
+#endif
+
 void setFramerate(Framerate tFramerate);
 Framerate getFramerate();
 float getFramerateFactor();

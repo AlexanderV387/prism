@@ -215,13 +215,26 @@ namespace prism {
 		}
 	}
 
+	// The screen the fades and the tint cover: on the 3DS in full width, the
+	// whole top screen, past the game's own sides.
+	static float getEffectLeft() {
+#ifdef __3DS__
+		return -getN3DSScreenSideMargin();
+#else
+		return 0;
+#endif
+	}
+
+	static float getEffectWidth() {
+		return getScreenSize().x - 2 * getEffectLeft();
+	}
+
 	static void addFadeIn_internal(Duration tDuration, ScreenEffectFinishedCB tOptionalCB, void* tCaller, const Vector3D& tStartPatchSize, const Vector3D& tFullPatchSize, const Vector3D& tSizeDelta, float tStartAlpha, float tAlphaDelta, IsScreenEffectOverFunction tIsOverFunc) {
 		if (!gScreenEffect.mIsActive) {
 			unloadedBehaviour(tDuration, tOptionalCB, tCaller);
 			return;
 		}
 
-		ScreenSize screen = getScreenSize();
 
 		FadeIn e;
 		e.mDuration = tDuration;
@@ -239,12 +252,13 @@ namespace prism {
 
 		e.mIsOverFunction = tIsOverFunc;
 
-		int amountX = (int)((screen.x + (tFullPatchSize.x - 1)) / tFullPatchSize.x);
-		int amountY = (int)((screen.y + (tFullPatchSize.y - 1)) / tFullPatchSize.y);
+		const float left = getEffectLeft(), width = getEffectWidth();
+		int amountX = (int)((width + (tFullPatchSize.x - 1)) / tFullPatchSize.x);
+		int amountY = (int)((getScreenSize().y + (tFullPatchSize.y - 1)) / tFullPatchSize.y);
 		e.mAnimationAmount = amountX * amountY;
 
 		e.mAnimationElements = (AnimationHandlerElement**)allocMemory(e.mAnimationAmount * sizeof(AnimationHandlerElement*));
-		Position p = Vector3D(0, 0, gScreenEffect.mZ);
+		Position p = Vector3D(left, 0, gScreenEffect.mZ);
 		int i;
 		for (i = 0; i < e.mAnimationAmount; i++) {
 			e.mAnimationElements[i] = playAnimationLoop(p, &gScreenEffect.mWhiteTexture, createOneFrameAnimation(), makeRectangleFromTexture(gScreenEffect.mWhiteTexture));
@@ -252,9 +266,9 @@ namespace prism {
 			setAnimationColor(e.mAnimationElements[i], gScreenEffect.mFadeColor.mR, gScreenEffect.mFadeColor.mG, gScreenEffect.mFadeColor.mB);
 
 			p = vecAdd(p, Vector3D(tFullPatchSize.x, 0, 0));
-			if (p.x >= screen.x) {
+			if (p.x >= left + width) {
 				p = vecAdd(p, tFullPatchSize);
-				p.x = 0;
+				p.x = left;
 			}
 		}
 
@@ -267,13 +281,13 @@ namespace prism {
 
 	void addFadeIn(Duration tDuration, ScreenEffectFinishedCB tOptionalCB, void* tCaller) {
 		float da = -1 / (float)tDuration;
-		Vector3D patchSize = Vector3D(getScreenSize().x, getScreenSize().y, 1);
+		Vector3D patchSize = Vector3D(getEffectWidth(), getScreenSize().y, 1);
 		addFadeIn_internal(tDuration, tOptionalCB, tCaller, patchSize, patchSize, Vector3D(0, 0, 0), 1, da, isFadeInOver);
 	}
 
 	void addVerticalLineFadeIn(Duration tDuration, ScreenEffectFinishedCB tOptionalCB, void* tCaller) {
 		float dy = -gScreenEffect.mFullLineSize / (float)tDuration;
-		addFadeIn_internal(tDuration, tOptionalCB, tCaller, Vector3D(getScreenSize().x, gScreenEffect.mFullLineSize + 1, 1), Vector3D(getScreenSize().x, gScreenEffect.mFullLineSize, 1), Vector3D(0, dy, 0), 1, 0, isVerticalLineFadeInOver);
+		addFadeIn_internal(tDuration, tOptionalCB, tCaller, Vector3D(getEffectWidth(), gScreenEffect.mFullLineSize + 1, 1), Vector3D(getEffectWidth(), gScreenEffect.mFullLineSize, 1), Vector3D(0, dy, 0), 1, 0, isVerticalLineFadeInOver);
 	}
 
 	static int skipSingleFadeInCB(FadeIn& e) {
@@ -309,7 +323,7 @@ namespace prism {
 
 	void addFadeOut(Duration tDuration, ScreenEffectFinishedCB tOptionalCB, void* tCaller) {
 		auto da = 1 / (float)tDuration;
-		Vector3D patchSize = Vector3D(getScreenSize().x, getScreenSize().y, 1);
+		Vector3D patchSize = Vector3D(getEffectWidth(), getScreenSize().y, 1);
 		FadeOutData* e = (FadeOutData*)allocMemory(sizeof(FadeOutData));
 		e->mCB = tOptionalCB;
 		e->mCaller = tCaller;
@@ -336,9 +350,9 @@ namespace prism {
 		if (gScreenEffect.mTintElement) return;
 
 		ScreenSize screen = getScreenSize();
-		Position p = Vector3D(0, 0, gScreenEffect.mTintZ);
+		Position p = Vector3D(getEffectLeft(), 0, gScreenEffect.mTintZ);
 		gScreenEffect.mTintElement = playAnimationLoop(p, &gScreenEffect.mWhiteTexture, createOneFrameAnimation(), makeRectangleFromTexture(gScreenEffect.mWhiteTexture));
-		setAnimationSize(gScreenEffect.mTintElement, Vector3D(screen.x, screen.y, 1), Vector3D(0, 0, 0));
+		setAnimationSize(gScreenEffect.mTintElement, Vector3D(getEffectWidth(), screen.y, 1), Vector3D(0, 0, 0));
 	}
 
 	static void applyTint() {
