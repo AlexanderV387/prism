@@ -5,6 +5,8 @@
 #include <ctype.h>
 #include <assert.h>
 #include <algorithm>
+#include <math.h>
+#include <stdio.h>
 
 #include "prism/memoryhandler.h"
 #include "prism/log.h"
@@ -13,6 +15,21 @@
 
 using namespace std;
 namespace prism {
+
+// An int map's key as text, as "%d" without printf (asked several hundred
+// times a frame in fights).
+static void writeIntMapKey(char* oText, int tKey) {
+	char digits[12];
+	int n = 0;
+	unsigned int value = tKey < 0 ? 0u - (unsigned int)tKey : (unsigned int)tKey;
+	do {
+		digits[n++] = char('0' + value % 10);
+		value /= 10;
+	} while (value);
+	if (tKey < 0) *oText++ = '-';
+	while (n) *oText++ = digits[--n];
+	*oText = '\0';
+}
 
 void convertIntegerToStringFast(std::string& oRet, int tValue)
 {
@@ -50,11 +67,36 @@ void convertIntegerToStringFast(std::string& oRet, int tValue)
 	oRet = std::string(ptr, buffer - ptr + BUFFER_SIZE - 1);
 }
 
+// As "%f" (six decimals, rounded), without printf: the 3DS's newlib formats
+// floats through big-number arithmetic, slow enough to take much of a frame
+// when formulas turn numbers into text.
 void convertFloatToStringFast(std::string& oRet, float tValue) {
-	static const auto BUFFER_SIZE = 50;
-	char buffer[BUFFER_SIZE];
-	sprintf(buffer, "%f", tValue);
-	oRet = buffer;
+	const double value = tValue;
+	if (!(value > -1e12 && value < 1e12)) {
+		char buffer[400];
+		snprintf(buffer, sizeof(buffer), "%f", tValue);
+		oRet = buffer;
+		return;
+	}
+	const int isNegative = value < 0 || (value == 0 && signbit(value));
+	// Exact: a float times a million fits a double; halves to even, as printf.
+	const unsigned long long scaled = (unsigned long long)llrint(fabs(value) * 1000000.0);
+	unsigned long long integerPart = scaled / 1000000ULL;
+	unsigned long long fractionPart = scaled % 1000000ULL;
+
+	char buffer[40];
+	char* ptr = buffer + sizeof(buffer);
+	for (int i = 0; i < 6; i++) {
+		*--ptr = char('0' + fractionPart % 10);
+		fractionPart /= 10;
+	}
+	*--ptr = '.';
+	do {
+		*--ptr = char('0' + integerPart % 10);
+		integerPart /= 10;
+	} while (integerPart);
+	if (isNegative) *--ptr = '-';
+	oRet.assign(ptr, buffer + sizeof(buffer) - ptr);
 }
 
 void turnStringLowercase(char* tString) {
@@ -794,7 +836,7 @@ static int gIntMapIndex;
 void int_map_push_owned(IntMap * tMap, int tKey, void * tData)
 {
 	char str[100];
-	sprintf(str, "%d", tKey);
+	writeIntMapKey(str, tKey);
 	string_map_push_owned(tMap, str, tData);
 }
 
@@ -808,7 +850,7 @@ int int_map_push_back_owned(IntMap * tMap, void * tData)
 void int_map_push(IntMap * tMap, int tKey, void * tData)
 {
 	char str[100];
-	sprintf(str, "%d", tKey);
+	writeIntMapKey(str, tKey);
 	string_map_push(tMap, str, tData);
 }
 
@@ -822,14 +864,14 @@ int int_map_push_back(IntMap * tMap, void * tData)
 void int_map_remove(IntMap * tMap, int tKey)
 {
 	char str[100];
-	sprintf(str, "%d", tKey);
+	writeIntMapKey(str, tKey);
 	string_map_remove(tMap, str);
 }
 
 void* int_map_get(IntMap * tMap, int tKey)
 {
 	char str[100];
-	sprintf(str, "%d", tKey);
+	writeIntMapKey(str, tKey);
 	return string_map_get(tMap, str);
 }
 
@@ -898,7 +940,7 @@ void int_map_remove_predicate(IntMap * tMap, predicateCB tCB, void * tCaller)
 int int_map_contains(IntMap * tMap, int tKey)
 {
 	char str[100];
-	sprintf(str, "%d", tKey);
+	writeIntMapKey(str, tKey);
 	return string_map_contains(tMap, str);
 }
 

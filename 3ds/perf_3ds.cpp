@@ -188,19 +188,49 @@ namespace prism {
 	// ==========================================================================
 	// The compatibility log.
 
+	static void appendFormat(std::string& oText, const char* tFormat, ...) {
+		char buffer[1024];
+		va_list args;
+		va_start(args, tFormat);
+		vsnprintf(buffer, sizeof(buffer), tFormat, args);
+		va_end(args);
+		oText += buffer;
+	}
+
+	// Written over itself, never emptied first: emptying and writing a file
+	// again took the SD card 8.5 s each time on a player's console (looking
+	// for room anew); a shorter text is padded to the file's length.
 	static void writeCompatLog() {
 		gCompat.mIsDirty = 0;
-		FILE* file = fopen(N3DS_COMPAT_FILE, "w");
-		if (!file) return;
-		fputs("compatibility log: per character and fight, what the game said and the warnings meanwhile (each once, with how often)\n", file);
+		const uint64_t start = getN3DSPerfTicks();
+		std::string text = "compatibility log: per character and fight, what the game said and the warnings meanwhile (each once, with how often)\n";
 		for (const auto& section : gCompat.mSections) {
-			fprintf(file, "\n== %s\n", section.mName.c_str());
-			for (const auto& line : section.mLines) fprintf(file, "  %s\n", line.c_str());
-			if (!section.mWarnings.empty()) fprintf(file, "  warnings (%d different):\n", (int)section.mWarnings.size());
-			for (const auto& warning : section.mWarnings) fprintf(file, "    %5dx %s\n", warning.second, warning.first.c_str());
-			if (section.mDroppedWarnings) fprintf(file, "    (and %d more different ones)\n", section.mDroppedWarnings);
+			appendFormat(text, "\n== %s\n", section.mName.c_str());
+			for (const auto& line : section.mLines) appendFormat(text, "  %s\n", line.c_str());
+			if (!section.mWarnings.empty()) appendFormat(text, "  warnings (%d different):\n", (int)section.mWarnings.size());
+			for (const auto& warning : section.mWarnings) appendFormat(text, "    %5dx %s\n", warning.second, warning.first.c_str());
+			if (section.mDroppedWarnings) appendFormat(text, "    (and %d more different ones)\n", section.mDroppedWarnings);
 		}
+
+		static long sFileSize = -1;   // as found when first written, then as written
+		FILE* file = fopen(N3DS_COMPAT_FILE, "r+b");
+		if (!file) {
+			file = fopen(N3DS_COMPAT_FILE, "wb");
+			sFileSize = 0;
+		}
+		if (!file) return;
+		if (sFileSize < 0) {
+			fseek(file, 0, SEEK_END);
+			sFileSize = ftell(file);
+			fseek(file, 0, SEEK_SET);
+		}
+		if ((long)text.size() < sFileSize) text.append(sFileSize - text.size() - 1, ' ').append("\n");
+		fwrite(text.data(), 1, text.size(), file);
 		fclose(file);
+		if ((long)text.size() > sFileSize) sFileSize = (long)text.size();
+
+		const double ms = getN3DSPerfMilliseconds(getN3DSPerfTicks() - start);
+		if (ms > 100) addN3DSPerfLine("  compat-log.txt written in %.0f ms (the SD card was slow to write)", ms);
 	}
 
 	static int findCompatSection(const char* tName, int* oIsNew = NULL) {
