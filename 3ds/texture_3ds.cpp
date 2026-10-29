@@ -10,6 +10,7 @@
 #include "prism/system.h"
 
 #include "prism3ds.h"
+#include "prism3dsperf.h"
 
 // [3DS] Textures on the PICA200: power-of-two sizes from 8 to 1024, in 8x8
 // tiles of pixels in Z order, the image's first row at the bottom (so that
@@ -33,10 +34,30 @@ namespace prism {
 
 	static const int MAXIMUM_TEXTURE_SIZE = 1024;
 
-	// The texel of the image's pixel x, y.
-	static inline u32 texelOffset(int x, int y, int tWidth, int tHeight) {
-		y = tHeight - 1 - y;
-		return ((y >> 3) * (tWidth >> 3) + (x >> 3)) * 64 + gTileOrder[(y & 7) * 8 + (x & 7)];
+	// The texels of the image's row y: the texel of pixel x is at
+	// mBase + ((x >> 3) << 6) + mOrder[x & 7].
+	typedef struct {
+		u32 mBase;
+		const u8* mOrder;
+	} TexelRow;
+
+	static inline TexelRow texelRow(int y, const C3D_Tex* tTex) {
+		const int flipped = tTex->height - 1 - y;
+		TexelRow ret;
+		ret.mBase = (flipped >> 3) * (tTex->width >> 3) * 64;
+		ret.mOrder = &gTileOrder[(flipped & 7) * 8];
+		return ret;
+	}
+
+	static inline u32 texelOffset(const TexelRow& tRow, int x) {
+		return tRow.mBase + ((x >> 3) << 6) + tRow.mOrder[x & 7];
+	}
+
+	// The time spent making textures, for the load-time log.
+	static void countTexture(uint64_t tStart, int tWidth, int tHeight) {
+		gN3DSPerf.mTextureTicks += getN3DSPerfTicks() - tStart;
+		gN3DSPerf.mTextures++;
+		gN3DSPerf.mTexels += (uint64_t)tWidth * tHeight;
 	}
 
 	static int powerOfTwoAtLeast(int tSize) {
@@ -81,6 +102,7 @@ namespace prism {
 	}
 
 	TextureData loadTextureFromARGB32Buffer(const Buffer& b, int tWidth, int tHeight) {
+		const uint64_t start = getN3DSPerfTicks();
 		TextureData ret = makeTexture(tWidth, tHeight, GPU_RGBA8);
 		C3D_Tex* tex = &((Texture)ret.mTexture->mData)->mTex;
 		u32* dst = (u32*)tex->data;
@@ -88,17 +110,21 @@ namespace prism {
 		const int w = clampedWidth(tWidth), h = clampedWidth(tHeight);
 
 		for (int y = 0; y < h; y++) {
+			const TexelRow row = texelRow(y, tex);
+			const u32* line = src + y * tWidth;
 			for (int x = 0; x < w; x++) {
-				const u32 argb = src[y * tWidth + x];
-				dst[texelOffset(x, y, tex->width, tex->height)] = (argb << 8) | (argb >> 24);
+				const u32 argb = line[x];
+				dst[texelOffset(row, x)] = (argb << 8) | (argb >> 24);
 			}
 		}
 
 		C3D_TexFlush(tex);
+		countTexture(start, w, h);
 		return ret;
 	}
 
 	TextureData loadTextureFromARGB16Buffer(const Buffer& b, int tWidth, int tHeight) {
+		const uint64_t start = getN3DSPerfTicks();
 		TextureData ret = makeTexture(tWidth, tHeight, GPU_RGBA4);
 		C3D_Tex* tex = &((Texture)ret.mTexture->mData)->mTex;
 		u16* dst = (u16*)tex->data;
@@ -106,13 +132,16 @@ namespace prism {
 		const int w = clampedWidth(tWidth), h = clampedWidth(tHeight);
 
 		for (int y = 0; y < h; y++) {
+			const TexelRow row = texelRow(y, tex);
+			const u16* line = src + y * tWidth;
 			for (int x = 0; x < w; x++) {
-				const u16 argb = src[y * tWidth + x];
-				dst[texelOffset(x, y, tex->width, tex->height)] = (u16)((argb << 4) | (argb >> 12));
+				const u16 argb = line[x];
+				dst[texelOffset(row, x)] = (u16)((argb << 4) | (argb >> 12));
 			}
 		}
 
 		C3D_TexFlush(tex);
+		countTexture(start, w, h);
 		return ret;
 	}
 
@@ -150,6 +179,10 @@ namespace prism {
 		texture->mIndexed = (unsigned char*)malloc(tWidth * tHeight);
 		memcpy(texture->mIndexed, b.mData, tWidth * tHeight);
 		texture->mPaletteVersion = -1;
+
+		// Converted now with the palette as it is (usually already set), not
+		// in the first frame it is drawn; again later if the palette changes.
+		prepareN3DSTexture(ret);
 		return ret;
 	}
 
@@ -160,6 +193,7 @@ namespace prism {
 		const int id = tTexture.mPaletteID & 3;
 		if (texture->mPaletteVersion == gN3DSPaletteVersions[id]) return;
 
+		const uint64_t start = getN3DSPerfTicks();
 		C3D_Tex* tex = &texture->mTex;
 		u16* dst = (u16*)tex->data;
 		u16 palette[256];
@@ -170,14 +204,16 @@ namespace prism {
 		const int w = clampedWidth(tTexture.mTextureSize.x), h = clampedWidth(tTexture.mTextureSize.y);
 
 		for (int y = 0; y < h; y++) {
-			const unsigned char* row = texture->mIndexed + y * tTexture.mTextureSize.x;
+			const TexelRow row = texelRow(y, tex);
+			const unsigned char* line = texture->mIndexed + y * tTexture.mTextureSize.x;
 			for (int x = 0; x < w; x++) {
-				dst[texelOffset(x, y, tex->width, tex->height)] = palette[row[x]];
+				dst[texelOffset(row, x)] = palette[line[x]];
 			}
 		}
 
 		C3D_TexFlush(tex);
 		texture->mPaletteVersion = gN3DSPaletteVersions[id];
+		countTexture(start, w, h);
 	}
 
 	// ==========================================================================

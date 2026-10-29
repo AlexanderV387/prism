@@ -22,6 +22,10 @@
 
 #include "prism/lz5.h"
 
+#ifdef __3DS__
+#include "3ds/prism3dsperf.h"
+#endif
+
 #ifdef _WIN32
 #include <imgui/imgui.h>
 #include "prism/windows/debugimgui_win.h"
@@ -1450,7 +1454,19 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	gPrismMugenSpriteFileReaderData.mHasPaletteFile = tHasPaletteFile;
 	checkMugenSpriteFileReader();
 
+#ifdef __3DS__
+	// [3DS] The ways of reading the file, in turn, and what each took.
+	const FileReader originalN3DSReader = gPrismMugenSpriteFileReaderData.mReader;
+	const int n3dsVariant = getNextN3DSSpriteReadVariant();
+	const N3DSPerfCounters n3dsBefore = gN3DSPerf;
+	const uint64_t n3dsStart = getN3DSPerfTicks();
+	if (n3dsVariant == N3DS_SPRITE_READ_WHOLE) gPrismMugenSpriteFileReaderData.mReader = getBufferFileReader();
+	if (n3dsVariant == N3DS_SPRITE_READ_BIG_BUFFER) gN3DSFileBufferSize = 64 * 1024;
+#endif
 	gPrismMugenSpriteFileReaderData.mReader.mInit(&gPrismMugenSpriteFileReaderData.mReader, tPath);
+#ifdef __3DS__
+	gN3DSFileBufferSize = 0;
+#endif
 
 	SFFSharedHeader header;
 	gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &header, sizeof(SFFSharedHeader));
@@ -1477,6 +1493,18 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	}
 
 	gPrismMugenSpriteFileReaderData.mReader.mDelete(&gPrismMugenSpriteFileReaderData.mReader);
+#ifdef __3DS__
+	gPrismMugenSpriteFileReaderData.mReader = originalN3DSReader;
+	{
+		static const char* variantNames[] = { "small reads", "64 KB buffer", "whole file" };
+		const double total = getN3DSPerfMilliseconds(getN3DSPerfTicks() - n3dsStart);
+		const double io = getN3DSPerfMilliseconds((gN3DSPerf.mOpenTicks - n3dsBefore.mOpenTicks) + (gN3DSPerf.mReadTicks - n3dsBefore.mReadTicks) + (gN3DSPerf.mSeekTicks - n3dsBefore.mSeekTicks));
+		const double tex = getN3DSPerfMilliseconds(gN3DSPerf.mTextureTicks - n3dsBefore.mTextureTicks);
+		addN3DSPerfLine("  sprites %s (%s): %.0f ms | SD %.0f ms (%u reads, %u seeks, %.0f KB) | textures %.0f ms (%u) | decoding and the rest %.0f ms",
+			tPath, variantNames[n3dsVariant], total, io, gN3DSPerf.mReads - n3dsBefore.mReads, gN3DSPerf.mSeeks - n3dsBefore.mSeeks,
+			(gN3DSPerf.mReadBytes - n3dsBefore.mReadBytes) / 1024.0, tex, gN3DSPerf.mTextures - n3dsBefore.mTextures, total - io - tex);
+	}
+#endif
 
 	debugFormat("Memory State after loading: %s", tPath);
 	debugLogTextureMemoryState();

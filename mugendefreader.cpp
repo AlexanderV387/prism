@@ -1,3 +1,6 @@
+#ifdef __3DS__
+#include "3ds/prism3dsperf.h"
+#endif
 #include "prism/mugendefreader.h"
 
 #include <assert.h>
@@ -840,7 +843,14 @@ void loadMugenDefScript(MugenDefScript* oScript, const char * tPath)
 	debugLog("Start loading script.");
 	debugString(tPath);
 	Buffer b = fileToBuffer(tPath);
+#ifdef __3DS__
+	const uint64_t start = getN3DSPerfTicks();
 	loadMugenDefScriptFromBufferAndFreeBuffer(oScript, b);
+	gN3DSPerf.mDefTicks += getN3DSPerfTicks() - start;
+	gN3DSPerf.mDefs++;
+#else
+	loadMugenDefScriptFromBufferAndFreeBuffer(oScript, b);
+#endif
 }
 
 void loadMugenDefScriptFromBufferAndFreeBuffer(MugenDefScript* oScript, Buffer& tBuffer) {

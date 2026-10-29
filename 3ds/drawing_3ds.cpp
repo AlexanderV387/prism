@@ -14,6 +14,7 @@
 
 #include "prism3ds.h"
 #include "prism3ds_shbin.h"
+#include "prism3dsperf.h"
 
 // [3DS] Drawing with citro3d, on the top screen. As on the Vita, sprites are
 // kept with their state and drawn sorted by z when the frame ends; the
@@ -470,6 +471,7 @@ namespace prism {
 		GSPGPU_FlushDataCache(gN3DSDrawingData.mVertices, gN3DSDrawingData.mVertexAmount * sizeof(Vertex));
 		C3D_FrameEnd(0);
 		gN3DSDrawingData.mIsFrameStarted = 0;
+		addN3DSPerfFrame();
 	}
 
 	void waitForRendering() {}

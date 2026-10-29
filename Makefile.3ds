@@ -10,7 +10,7 @@ windows/romdisk_win.o windows/saveload_win.o windows/memoryhandler_win.o windows
 windows/framerateselect_win.o \
 web/netplay_web.o
 
-OBJS += 3ds/system_3ds.o 3ds/drawing_3ds.o 3ds/texture_3ds.o 3ds/log_3ds.o 3ds/prism3ds_shbin.o \
+OBJS += 3ds/system_3ds.o 3ds/drawing_3ds.o 3ds/texture_3ds.o 3ds/log_3ds.o 3ds/perf_3ds.o 3ds/prism3ds_shbin.o \
 3ds/input_3ds.o 3ds/screeneffect_3ds.o \
 3ds/sound_3ds.o 3ds/soundeffect_3ds.o 3ds/thread_3ds.o 3ds/windowfocusscreen_3ds.o
 

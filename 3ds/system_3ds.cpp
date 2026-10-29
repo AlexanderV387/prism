@@ -10,6 +10,7 @@
 #include "prism/log.h"
 
 #include "prism3ds.h"
+#include "prism3dsperf.h"
 
 // [3DS] The console: the screens, the romfs (prism's own files) and the
 // New 3DS's speed. The HOME Menu's "close" ends the game.
@@ -36,6 +37,7 @@ namespace prism {
 		consoleInit(GFX_BOTTOM, NULL);
 		romfsInit();
 		atexit(shutdownN3DS);
+		initN3DSPerf();
 		gSystemN3DSData.mIsLoaded = 1;
 	}
 

@@ -10,6 +10,10 @@
 #include "prism/datastructures.h"
 #include "prism/windows/romdisk_win.h"
 
+#ifdef __3DS__
+#include "../3ds/prism3dsperf.h"
+#endif
+
 #ifdef _WIN32
 #include <imgui/imgui.h>
 #include "prism/windows/debugimgui_win.h"
@@ -247,7 +251,15 @@ namespace prism {
 			recoverFromError();
 		}
 
+#ifdef __3DS__
+		const uint64_t openStart = getN3DSPerfTicks();
 		auto ret = fopen(path, flags);
+		gN3DSPerf.mOpenTicks += getN3DSPerfTicks() - openStart;
+		gN3DSPerf.mOpens++;
+		if (ret && gN3DSFileBufferSize) setvbuf(ret, NULL, _IOFBF, gN3DSFileBufferSize);
+#else
+		auto ret = fopen(path, flags);
+#endif
 #ifdef __linux__
 		if (!ret && tFlags == O_RDONLY) {
 			char resolved[1024];
@@ -267,7 +279,16 @@ namespace prism {
 	size_t fileRead(FileHandler tHandler, void* tBuffer, size_t tCount) {
 		if (isRomdiskFileHandler(tHandler)) return fileReadRomdisk(tHandler, tBuffer, tCount);
 
+#ifdef __3DS__
+		const uint64_t start = getN3DSPerfTicks();
+		const size_t ret = fread(tBuffer, 1, tCount, tHandler);
+		gN3DSPerf.mReadTicks += getN3DSPerfTicks() - start;
+		gN3DSPerf.mReads++;
+		gN3DSPerf.mReadBytes += ret;
+		return ret;
+#else
 		return fread(tBuffer, 1, tCount, tHandler);
+#endif
 	}
 	size_t fileWrite(FileHandler tHandler, const void* tBuffer, size_t tCount) {
 		if (isRomdiskFileHandler(tHandler)) {
@@ -281,7 +302,15 @@ namespace prism {
 	size_t fileSeek(FileHandler tHandler, size_t tOffset, int tWhence) {
 		if (isRomdiskFileHandler(tHandler)) return fileSeekRomdisk(tHandler, tOffset, tWhence);
 
+#ifdef __3DS__
+		const uint64_t start = getN3DSPerfTicks();
+		const size_t ret = fseek(tHandler, long(tOffset), tWhence);
+		gN3DSPerf.mSeekTicks += getN3DSPerfTicks() - start;
+		gN3DSPerf.mSeeks++;
+		return ret;
+#else
 		return fseek(tHandler, long(tOffset), tWhence);
+#endif
 	}
 	size_t fileTell(FileHandler tHandler) {
 		if (isRomdiskFileHandler(tHandler)) return fileTellRomdisk(tHandler);

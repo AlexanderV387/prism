@@ -10,6 +10,8 @@
 #include "prism/file.h"
 #include "prism/log.h"
 
+#include "prism3dsperf.h"
+
 // [3DS] Sound effects on the DSP (ndsp, which needs /3ds/dspfirm.cdc: without
 // it the game is silent). The WAVs are kept as 16-bit PCM in linear memory,
 // where the DSP reads them; prism's channels 1 to 15 are the DSP's 0 to 14
@@ -63,7 +65,17 @@ namespace prism {
 	static u32 readU32(const u8* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((u32)p[3] << 24); }
 	static u16 readU16(const u8* p) { return (u16)(p[0] | (p[1] << 8)); }
 
+	static int loadSoundEffectFromBufferUncounted(const Buffer& tBuffer);
+
 	int loadSoundEffectFromBuffer(const Buffer& tBuffer) {
+		const uint64_t start = getN3DSPerfTicks();
+		const int ret = loadSoundEffectFromBufferUncounted(tBuffer);
+		gN3DSPerf.mSoundTicks += getN3DSPerfTicks() - start;
+		gN3DSPerf.mSounds++;
+		return ret;
+	}
+
+	static int loadSoundEffectFromBufferUncounted(const Buffer& tBuffer) {
 		const u8* d = (const u8*)tBuffer.mData;
 		const size_t length = tBuffer.mLength;
 		if (length < 12 || memcmp(d, "RIFF", 4) || memcmp(d + 8, "WAVE", 4)) {
