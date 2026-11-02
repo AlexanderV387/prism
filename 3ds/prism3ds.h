@@ -27,10 +27,19 @@ namespace prism {
 	// memory of the ARGB32 texture it would be otherwise.
 	TextureData loadN3DSTextureWithOwnPalette(const Buffer& b, const u32* tRGBAPalette, int tWidth, int tHeight);
 
+	// Lets streamed textures' pixels go, those drawn longest ago first, until
+	// tWanted bytes are free (0: all); the bytes freed.
+	size_t letN3DSStreamedPixelsGo(size_t tWanted);
+	// What the sprite reader keeps of the last streamed sprite, let go with them.
+	extern void (*gN3DSLetStreamCacheGo)();
+
+	// A sound read by tRead straight into linear memory (soundeffect_3ds.cpp);
+	// its ID, -1 if it could not be, -2 if it has to be read whole first.
+	int loadN3DSSoundEffectFromReader(void (*tRead)(void* tCaller, void* tDst, uint32_t tSize), void* tCaller, uint32_t tLength);
+
 	// A streamed paletted texture: no pixels kept, read through tStream
 	// when drawn (its palette prism's tPaletteID, or tRGBAPalette when not
 	// NULL); the texture lets tStream go.
-	size_t letN3DSStreamedPixelsGo(size_t tWanted);
 	TextureData loadN3DSStreamedTexture(N3DSTextureStream* tStream, const u32* tRGBAPalette, int tPaletteID, int tWidth, int tHeight);
 
 	// The palette a paletted texture's texels are made with (RGBA5551).

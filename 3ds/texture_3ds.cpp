@@ -265,6 +265,8 @@ namespace prism {
 	// Lets streamed pixels go, those drawn longest ago first, until tWanted
 	// bytes are free (0: all of them); the bytes freed. Also from the C++
 	// allocation's handler (system_3ds.cpp), when the heap runs out.
+	void (*gN3DSLetStreamCacheGo)() = NULL;
+
 	size_t letN3DSStreamedPixelsGo(size_t tWanted) {
 		if (gIsChangingStreamed) return 0;
 		size_t freed = 0;
@@ -279,6 +281,7 @@ namespace prism {
 			letStreamedPixelsGo(oldest);
 			gN3DSPerf.mStreamedLetGo++;
 		}
+		if (!tWanted && gN3DSLetStreamCacheGo) gN3DSLetStreamCacheGo();
 		if ((!tWanted || freed < tWanted) && gStreamScratch.capacity()) {
 			freed += gStreamScratch.capacity();
 			std::vector<unsigned char>().swap(gStreamScratch);

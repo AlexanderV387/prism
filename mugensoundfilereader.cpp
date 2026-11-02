@@ -9,6 +9,9 @@
 #include <prism/log.h>
 #include <prism/system.h>
 #include <prism/profiling.h>
+#ifdef __3DS__
+#include "3ds/prism3ds.h"
+#endif
 
 namespace prism {
 
@@ -52,9 +55,23 @@ namespace prism {
 		group = (MugenSoundGroup*)int_map_get(&tSounds->mGroups, subHeader.mGroupNumber);
 		MugenSoundSample* e = (MugenSoundSample*)allocMemory(sizeof(MugenSoundSample));
 		if (unsigned(getAvailableSoundMemory()) >= subHeader.mSubfileLength * 2) {
-			Buffer waveFileBuffer = gMugenSoundFileReaderData.mFileReader.mReadBufferReadOnly(&gMugenSoundFileReaderData.mFileReader, subHeader.mSubfileLength);
-			e->mSoundEffectID = loadSoundEffectFromBuffer(waveFileBuffer);
-			freeBuffer(waveFileBuffer);
+#ifdef __3DS__
+			// [3DS] A big one straight into the DSP's memory, not through the heap.
+			e->mSoundEffectID = -2;
+			if (subHeader.mSubfileLength > 64 * 1024) {
+				const uint32_t start = gMugenSoundFileReaderData.mFileReader.mGetCurrentOffset(&gMugenSoundFileReaderData.mFileReader);
+				e->mSoundEffectID = loadN3DSSoundEffectFromReader([](void* tCaller, void* tDst, uint32_t tSize) {
+					((FileReader*)tCaller)->mRead((FileReader*)tCaller, tDst, tSize);
+				}, &gMugenSoundFileReaderData.mFileReader, subHeader.mSubfileLength);
+				if (e->mSoundEffectID == -2) gMugenSoundFileReaderData.mFileReader.mSeek(&gMugenSoundFileReaderData.mFileReader, start);
+			}
+			if (e->mSoundEffectID == -2)
+#endif
+			{
+				Buffer waveFileBuffer = gMugenSoundFileReaderData.mFileReader.mReadBufferReadOnly(&gMugenSoundFileReaderData.mFileReader, subHeader.mSubfileLength);
+				e->mSoundEffectID = loadSoundEffectFromBuffer(waveFileBuffer);
+				freeBuffer(waveFileBuffer);
+			}
 		}
 		else {
 			logWarningFormat("Early out for sound effect %d %d, does not fit in sound memory.", subHeader.mGroupNumber, subHeader.mSampleNumber);

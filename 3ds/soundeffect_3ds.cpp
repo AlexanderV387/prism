@@ -13,7 +13,7 @@
 #include "prism3dsperf.h"
 
 // [3DS] Sound effects on the DSP (ndsp, which needs /3ds/dspfirm.cdc: without
-// it the game is silent). The WAVs are kept as 16-bit PCM in linear memory,
+// it the game is silent). The WAVs are kept as PCM (8 or 16-bit) in linear memory,
 // where the DSP reads them; prism's channels 1 to 23 are the DSP's 0 to 22
 // (24, the DSP's 23, is the music's). Sounds on any channel take the free
 // ones from the top, leaving the low ones to sounds on a given channel (a
@@ -22,9 +22,10 @@
 namespace prism {
 
 	typedef struct {
-		s16* mData;
+		void* mData;
 		u32 mSampleAmount;
 		int mChannelAmount;
+		int mBytesPerSample;
 		u32 mRate;
 	} N3DSSoundEffect;
 
@@ -36,7 +37,7 @@ namespace prism {
 		int mNextID = 0;
 		std::map<int, N3DSSoundEffect> mSoundEffects;
 		ndspWaveBuf mWaveBufs[CHANNEL_AMOUNT];
-		s16* mPlaying[CHANNEL_AMOUNT];
+		void* mPlaying[CHANNEL_AMOUNT];
 		float mChannelVolume[CHANNEL_AMOUNT];
 		float mChannelPanning[CHANNEL_AMOUNT];
 	} gN3DSSoundEffectData;
@@ -62,12 +63,90 @@ namespace prism {
 	void setSoundEffectCompression(int /*tIsEnabled*/) {}
 
 	// ==========================================================================
-	// WAV (PCM, 8 or 16 bits, mono or stereo) to 16-bit samples.
+	// WAV (PCM, 8 or 16 bits, mono or stereo), kept as it is: 8-bit sounds
+	// stay 8-bit (a boss's theme song as a sound: 10 MB, not 21).
 
 	static u32 readU32(const u8* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((u32)p[3] << 24); }
 	static u16 readU16(const u8* p) { return (u16)(p[0] | (p[1] << 8)); }
 
-	static int loadSoundEffectFromBufferUncounted(const Buffer& tBuffer);
+	typedef struct {
+		int mChannels, mBits, mFormat;
+		u32 mRate;
+		size_t mDataStart;   // in the WAV
+		u32 mDataLength;
+	} WAVInfo;
+
+	// The WAV's format and where its samples start, from its first tLength
+	// bytes; 0 if those do not reach the samples.
+	static int parseWAVHeader(const u8* d, size_t tLength, size_t tTotalLength, WAVInfo* oInfo) {
+		if (tLength < 12 || memcmp(d, "RIFF", 4) || memcmp(d + 8, "WAVE", 4)) return 0;
+		memset(oInfo, 0, sizeof(*oInfo));
+		for (size_t pos = 12; pos + 8 <= tLength;) {
+			const u32 chunkLength = readU32(d + pos + 4);
+			const u8* chunk = d + pos + 8;
+			if (!memcmp(d + pos, "fmt ", 4) && chunkLength >= 16 && pos + 8 + 16 <= tLength) {
+				oInfo->mFormat = readU16(chunk);
+				oInfo->mChannels = readU16(chunk + 2);
+				oInfo->mRate = readU32(chunk + 4);
+				oInfo->mBits = readU16(chunk + 14);
+			}
+			else if (!memcmp(d + pos, "data", 4)) {
+				oInfo->mDataStart = pos + 8;
+				oInfo->mDataLength = (u32)std::min<size_t>(chunkLength, tTotalLength - (pos + 8));
+				return 1;
+			}
+			pos += 8 + chunkLength + (chunkLength & 1);
+		}
+		return 0;
+	}
+
+	static int isSupportedWAV(const WAVInfo& tInfo) {
+		if (tInfo.mFormat != 1 || (tInfo.mBits != 8 && tInfo.mBits != 16) || tInfo.mChannels < 1 || tInfo.mChannels > 2 || !tInfo.mRate) {
+			logWarningFormat("Unsupported WAV sound (format %d, %d bits, %d channels).", tInfo.mFormat, tInfo.mBits, tInfo.mChannels);
+			return 0;
+		}
+		return 1;
+	}
+
+	static int addSoundEffect(void* tData, const WAVInfo& tInfo) {
+		const int bytesPerSample = tInfo.mBits / 8;
+		const u32 sampleAmount = tInfo.mDataLength / bytesPerSample / tInfo.mChannels;
+		// The DSP's 8-bit samples are signed, WAV's are not.
+		if (bytesPerSample == 1) {
+			u8* samples = (u8*)tData;
+			for (u32 i = 0; i < sampleAmount * tInfo.mChannels; i++) samples[i] ^= 0x80;
+		}
+		DSP_FlushDataCache(tData, sampleAmount * tInfo.mChannels * bytesPerSample);
+
+		N3DSSoundEffect e;
+		e.mData = tData;
+		e.mSampleAmount = sampleAmount;
+		e.mChannelAmount = tInfo.mChannels;
+		e.mBytesPerSample = bytesPerSample;
+		e.mRate = tInfo.mRate;
+		const int id = gN3DSSoundEffectData.mNextID++;
+		gN3DSSoundEffectData.mSoundEffects[id] = e;
+		return id;
+	}
+
+	static int loadSoundEffectFromBufferUncounted(const Buffer& tBuffer) {
+		WAVInfo info;
+		if (!parseWAVHeader((const u8*)tBuffer.mData, tBuffer.mLength, tBuffer.mLength, &info)) {
+			logWarning("Not a WAV sound.");
+			return -1;
+		}
+		if (!isSupportedWAV(info)) return -1;
+		const u32 length = info.mDataLength - info.mDataLength % (info.mBits / 8 * info.mChannels);
+		if (!length) return -1;
+		info.mDataLength = length;
+		void* samples = linearAlloc(length);
+		if (!samples) {
+			logWarning("Out of linear memory for a sound.");
+			return -1;
+		}
+		memcpy(samples, (const u8*)tBuffer.mData + info.mDataStart, length);
+		return addSoundEffect(samples, info);
+	}
 
 	int loadSoundEffectFromBuffer(const Buffer& tBuffer) {
 		const uint64_t start = getN3DSPerfTicks();
@@ -77,64 +156,38 @@ namespace prism {
 		return ret;
 	}
 
-	static int loadSoundEffectFromBufferUncounted(const Buffer& tBuffer) {
-		const u8* d = (const u8*)tBuffer.mData;
-		const size_t length = tBuffer.mLength;
-		if (length < 12 || memcmp(d, "RIFF", 4) || memcmp(d + 8, "WAVE", 4)) {
-			logWarning("Not a WAV sound.");
-			return -1;
-		}
-
-		int channels = 0, bits = 0, format = 0;
-		u32 rate = 0;
-		const u8* data = NULL;
-		u32 dataLength = 0;
-		for (size_t pos = 12; pos + 8 <= length;) {
-			const u32 chunkLength = readU32(d + pos + 4);
-			const u8* chunk = d + pos + 8;
-			if (!memcmp(d + pos, "fmt ", 4) && chunkLength >= 16) {
-				format = readU16(chunk);
-				channels = readU16(chunk + 2);
-				rate = readU32(chunk + 4);
-				bits = readU16(chunk + 14);
+	// A WAV of tLength bytes read by tRead straight into linear memory (a big
+	// one in the heap first did not fit there next to a boss's sprites); -2
+	// if its header is longer than the start read (then read it whole).
+	int loadN3DSSoundEffectFromReader(void (*tRead)(void* tCaller, void* tDst, uint32_t tSize), void* tCaller, uint32_t tLength) {
+		const uint64_t startTicks = getN3DSPerfTicks();
+		u8 header[1024];
+		const uint32_t headerLength = std::min<uint32_t>(tLength, sizeof(header));
+		tRead(tCaller, header, headerLength);
+		WAVInfo info;
+		if (!parseWAVHeader(header, headerLength, tLength, &info)) {
+			if (headerLength == tLength) {
+				logWarning("Not a WAV sound.");
+				return -1;
 			}
-			else if (!memcmp(d + pos, "data", 4)) {
-				data = chunk;
-				dataLength = (u32)std::min<size_t>(chunkLength, length - (pos + 8));
-				break;
-			}
-			pos += 8 + chunkLength + (chunkLength & 1);
+			return -2;
 		}
-
-		if (!data || format != 1 || (bits != 8 && bits != 16) || channels < 1 || channels > 2 || !rate) {
-			logWarningFormat("Unsupported WAV sound (format %d, %d bits, %d channels).", format, bits, channels);
-			return -1;
-		}
-
-		const u32 sampleAmount = dataLength / (bits / 8) / channels;
-		if (!sampleAmount) return -1;
-		s16* samples = (s16*)linearAlloc(sampleAmount * channels * sizeof(s16));
+		if (!isSupportedWAV(info)) return -1;
+		const u32 length = info.mDataLength - info.mDataLength % (info.mBits / 8 * info.mChannels);
+		if (!length) return -1;
+		info.mDataLength = length;
+		u8* samples = (u8*)linearAlloc(length);
 		if (!samples) {
 			logWarning("Out of linear memory for a sound.");
 			return -1;
 		}
-
-		if (bits == 16) {
-			memcpy(samples, data, sampleAmount * channels * sizeof(s16));
-		}
-		else {
-			for (u32 i = 0; i < sampleAmount * channels; i++) samples[i] = (s16)((data[i] - 128) << 8);
-		}
-		DSP_FlushDataCache(samples, sampleAmount * channels * sizeof(s16));
-
-		N3DSSoundEffect e;
-		e.mData = samples;
-		e.mSampleAmount = sampleAmount;
-		e.mChannelAmount = channels;
-		e.mRate = rate;
-		const int id = gN3DSSoundEffectData.mNextID++;
-		gN3DSSoundEffectData.mSoundEffects[id] = e;
-		return id;
+		const u32 inHeader = (u32)std::min<size_t>(length, headerLength - info.mDataStart);
+		memcpy(samples, header + info.mDataStart, inHeader);
+		if (length > inHeader) tRead(tCaller, samples + inHeader, length - inHeader);
+		const int ret = addSoundEffect(samples, info);
+		gN3DSPerf.mSoundTicks += getN3DSPerfTicks() - startTicks;
+		gN3DSPerf.mSounds++;
+		return ret;
 	}
 
 	int loadSoundEffect(const char* tPath) {
@@ -205,7 +258,8 @@ namespace prism {
 		ndspChnReset(dsp);
 		ndspChnSetInterp(dsp, NDSP_INTERP_LINEAR);
 		ndspChnSetRate(dsp, e.mRate * (tFreqMul > 0 ? tFreqMul : 1.0f));
-		ndspChnSetFormat(dsp, e.mChannelAmount == 2 ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
+		if (e.mBytesPerSample == 1) ndspChnSetFormat(dsp, e.mChannelAmount == 2 ? NDSP_FORMAT_STEREO_PCM8 : NDSP_FORMAT_MONO_PCM8);
+		else ndspChnSetFormat(dsp, e.mChannelAmount == 2 ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
 
 		gN3DSSoundEffectData.mChannelVolume[tChannel] = tVolume;
 		gN3DSSoundEffectData.mChannelPanning[tChannel] = 0;
