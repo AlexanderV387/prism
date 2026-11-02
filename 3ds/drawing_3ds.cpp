@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 #include <set>
+#include <algorithm>
 
 #include "prism/log.h"
 #include "prism/system.h"
@@ -302,13 +303,14 @@ namespace prism {
 		BlendType mBlendType;
 		int mIsColorSolid;
 		int mIsColorInversed;
-		u32 mColorOffset;
+		u32 mColorOffset;           // PalFX's add: what adds
+		u32 mColorOffsetNegative;   // and what takes away
 		u8 mDestAlpha;
 	} DrawState;
 
 	static bool isSameDrawState(const DrawState& a, const DrawState& b) {
 		return a.mTex == b.mTex && a.mBlendType == b.mBlendType && a.mIsColorSolid == b.mIsColorSolid
-			&& a.mIsColorInversed == b.mIsColorInversed && a.mColorOffset == b.mColorOffset && a.mDestAlpha == b.mDestAlpha;
+			&& a.mIsColorInversed == b.mIsColorInversed && a.mColorOffset == b.mColorOffset && a.mColorOffsetNegative == b.mColorOffsetNegative && a.mDestAlpha == b.mDestAlpha;
 	}
 
 	static u8 toByte(float tValue) {
@@ -320,9 +322,9 @@ namespace prism {
 	static void applyDrawState(const DrawState& tState) {
 		C3D_TexBind(0, tState.mTex);
 
-		const bool hasOffset = tState.mColorOffset != 0;
 		C3D_TexEnv* env = C3D_GetTexEnv(0);
 		C3D_TexEnvInit(env);
+		int stage = 1;
 		if (tState.mIsColorSolid) {
 			// The vertex color, with the texture's alpha.
 			C3D_TexEnvSrc(env, C3D_RGB, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
@@ -330,28 +332,32 @@ namespace prism {
 			C3D_TexEnvSrc(env, C3D_Alpha, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
 			C3D_TexEnvFunc(env, C3D_Alpha, GPU_MODULATE);
 		}
-		else if (hasOffset) {
-			// (texture + offset) * vertex color, in two stages.
-			C3D_TexEnvSrc(env, C3D_RGB, GPU_TEXTURE0, GPU_CONSTANT, GPU_PRIMARY_COLOR);
-			C3D_TexEnvOpRgb(env, tState.mIsColorInversed ? GPU_TEVOP_RGB_ONE_MINUS_SRC_COLOR : GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR);
-			C3D_TexEnvFunc(env, C3D_RGB, GPU_ADD);
-			C3D_TexEnvSrc(env, C3D_Alpha, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
-			C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
-			C3D_TexEnvColor(env, tState.mColorOffset);
-
-			env = C3D_GetTexEnv(1);
-			C3D_TexEnvInit(env);
-			C3D_TexEnvSrc(env, C3D_Both, GPU_PREVIOUS, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
-			C3D_TexEnvFunc(env, C3D_Both, GPU_MODULATE);
-		}
 		else {
+			// As MUGEN's PalFX: the color (inverted or not) times mul, then
+			// plus add (one stage for what adds, one for what takes away).
 			C3D_TexEnvSrc(env, C3D_Both, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
 			C3D_TexEnvOpRgb(env, tState.mIsColorInversed ? GPU_TEVOP_RGB_ONE_MINUS_SRC_COLOR : GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR);
 			C3D_TexEnvFunc(env, C3D_Both, GPU_MODULATE);
+			if (tState.mColorOffset) {
+				env = C3D_GetTexEnv(stage++);
+				C3D_TexEnvInit(env);
+				C3D_TexEnvSrc(env, C3D_RGB, GPU_PREVIOUS, GPU_CONSTANT, GPU_PRIMARY_COLOR);
+				C3D_TexEnvFunc(env, C3D_RGB, GPU_ADD);
+				C3D_TexEnvSrc(env, C3D_Alpha, GPU_PREVIOUS, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+				C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
+				C3D_TexEnvColor(env, tState.mColorOffset);
+			}
+			if (tState.mColorOffsetNegative) {
+				env = C3D_GetTexEnv(stage++);
+				C3D_TexEnvInit(env);
+				C3D_TexEnvSrc(env, C3D_RGB, GPU_PREVIOUS, GPU_CONSTANT, GPU_PRIMARY_COLOR);
+				C3D_TexEnvFunc(env, C3D_RGB, GPU_SUBTRACT);
+				C3D_TexEnvSrc(env, C3D_Alpha, GPU_PREVIOUS, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+				C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
+				C3D_TexEnvColor(env, tState.mColorOffsetNegative);
+			}
 		}
-		if (!hasOffset || tState.mIsColorSolid) {
-			C3D_TexEnvInit(C3D_GetTexEnv(1));
-		}
+		for (; stage < 3; stage++) C3D_TexEnvInit(C3D_GetTexEnv(stage));
 
 		// "One" draws every texel, the transparent color too (MUGEN's mask = 0:
 		// a storyboard's white paper, a title screen's background).
@@ -383,10 +389,12 @@ namespace prism {
 		tVertex->z = 0.5f;
 		tVertex->u = tU;
 		tVertex->v = tV;
-		tVertex->r = tData.r;
-		tVertex->g = tData.g;
-		tVertex->b = tData.b;
-		tVertex->a = tData.a;
+		// Between 0 and 1: the GPU takes others as they come (a PalFX's
+		// negative mul, Kyouki's hits, made the one hit green, not black).
+		tVertex->r = std::min(std::max(tData.r, 0.0f), 1.0f);
+		tVertex->g = std::min(std::max(tData.g, 0.0f), 1.0f);
+		tVertex->b = std::min(std::max(tData.b, 0.0f), 1.0f);
+		tVertex->a = std::min(std::max(tData.a, 0.0f), 1.0f);
 	}
 
 	static int gBatchStart;
@@ -413,6 +421,7 @@ namespace prism {
 		state.mIsColorSolid = e.mData.mIsColorSolid;
 		state.mIsColorInversed = e.mData.mIsColorInversed;
 		state.mColorOffset = (u32)toByte(e.mData.rOffset) | ((u32)toByte(e.mData.gOffset) << 8) | ((u32)toByte(e.mData.bOffset) << 16);
+		state.mColorOffsetNegative = (u32)toByte(-e.mData.rOffset) | ((u32)toByte(-e.mData.gOffset) << 8) | ((u32)toByte(-e.mData.bOffset) << 16);
 		state.mDestAlpha = toByte(e.mData.mDestAlpha);
 
 		if (!*tHasState || !isSameDrawState(state, *tCurrentState)) {

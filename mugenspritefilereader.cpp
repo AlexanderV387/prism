@@ -1116,10 +1116,12 @@ static MugenSpriteFileSprite makeN3DSStreamedSprite(int tKind, uint32_t tOffset,
 static std::vector<uint8_t> gPCXBasePalette;
 static int gIsOnPCXBasePalette;
 static int gPCXSpriteGroup;   // the group of the sprite being loaded
+static int gIsPCXPaletteFromPortrait;   // the last palette of its own, a portrait's
 
 static void resetPCXBasePalette() {
 	gPCXBasePalette.clear();
 	gIsOnPCXBasePalette = 1;
+	gIsPCXPaletteFromPortrait = 0;
 	gPCXSpriteGroup = -1;
 }
 
@@ -1325,6 +1327,12 @@ static void loadSingleSFFFileAndInsertIntoSpriteFile(const SFFSubFileHeader& sub
 		int isFirstImageWithActiveActFile = gPrismMugenSpriteFileReaderData.mHasPaletteFile && subHeader.mGroup == 0 && subHeader.mImage == 0; 
 		int isUsingOwnPalette = !subHeader.mHasSamePaletteAsPreviousImage && !isFirstImageWithActiveActFile;
 		if (isFirstImageWithActiveActFile) gIsOnPCXBasePalette = 1;
+		// A portrait's palette (group 9000) is its own: the sprites after it
+		// sharing "the previous palette" are the character's, drawn with the
+		// .act chosen as in WinMUGEN (2002 Rugal's 1279 sprites came after
+		// his big portrait's palette, his chosen colors not shown).
+		if (isUsingOwnPalette) gIsPCXPaletteFromPortrait = subHeader.mGroup == 9000;
+		else if (subHeader.mGroup != 9000 && gIsPCXPaletteFromPortrait) gIsOnPCXBasePalette = 1;
 		gPreviousGroup = subHeader.mGroup;
 		gPCXSpriteGroup = subHeader.mGroup;
 		texture = loadTextureFromPCXBuffer(tDst, isUsingOwnPalette, pcxBuffer, Vector2D(subHeader.mImageAxisXCoordinate, subHeader.mImageAxisYCoordinate));
