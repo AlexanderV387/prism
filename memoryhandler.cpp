@@ -76,6 +76,7 @@ namespace prism {
 		data->mOwnPalette = -1;
 		data->mPaletteVersion = -1;
 		data->mLastUsedFrame = 0;
+		data->mStream = NULL;
 		return data;
 	}
 
@@ -86,6 +87,7 @@ namespace prism {
 		forgetN3DSTexture(data);
 		if (data->mIsInitialized) C3D_TexDelete(&data->mTex);
 		free(data->mIndexed);
+		if (data->mStream && data->mStream->mFree) data->mStream->mFree(data->mStream);
 		free(tData);
 	}
 

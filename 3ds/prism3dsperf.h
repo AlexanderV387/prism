@@ -36,6 +36,10 @@ namespace prism {
 		// Paletted textures made again for a palette that changed.
 		uint32_t mRepaletted;
 		uint64_t mRepalettedTicks;
+		// Streamed sprites read from their file when drawn, and let go.
+		uint32_t mStreamed;
+		uint64_t mStreamedTicks;
+		uint32_t mStreamedLetGo;
 	} N3DSPerfCounters;
 
 	extern N3DSPerfCounters gN3DSPerf;

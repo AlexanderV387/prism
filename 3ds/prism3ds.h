@@ -27,6 +27,11 @@ namespace prism {
 	// memory of the ARGB32 texture it would be otherwise.
 	TextureData loadN3DSTextureWithOwnPalette(const Buffer& b, const u32* tRGBAPalette, int tWidth, int tHeight);
 
+	// A streamed paletted texture: no pixels kept, read through tStream
+	// when drawn (its palette prism's tPaletteID, or tRGBAPalette when not
+	// NULL); the texture lets tStream go.
+	TextureData loadN3DSStreamedTexture(N3DSTextureStream* tStream, const u32* tRGBAPalette, int tPaletteID, int tWidth, int tHeight);
+
 	// The palette a paletted texture's texels are made with (RGBA5551).
 	void getN3DSTexturePalette(const TextureData& tTexture, u16* oColors);
 

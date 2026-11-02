@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <string.h>
 #include <algorithm>
+#include <set>
 
 #ifdef DREAMCAST
 #include <png/png.h>
@@ -887,6 +888,164 @@ static int hasN3DSHeapRoomForSprite(size_t tNeeded) {
 }
 #endif
 
+#ifdef N3DS_HEAP_GUARD
+// [3DS] Streamed sprites: one with no room in the heap is not left out but
+// read from its file again when drawn (texture_3ds.cpp keeps a few of them,
+// those drawn last): where it is in the file, how it is stored, and the
+// piece of it a texture shows.
+enum {
+	N3DS_STREAM_PCX,     // SFF v1
+	N3DS_STREAM_RAW,     // SFF v2, format 0
+	N3DS_STREAM_RLE8,    // format 2
+	N3DS_STREAM_LZ5,     // format 4
+	N3DS_STREAM_PNG8,    // format 10
+};
+
+typedef struct {
+	N3DSTextureStream mBase;
+	const std::string* mPath;
+	uint32_t mOffset;
+	uint32_t mLength;
+	uint8_t mKind;
+	uint16_t mWidth, mHeight, mBytesPerLine;   // the whole image
+	uint16_t mX, mY;                           // the piece's corner in it
+} N3DSSpriteStream;
+
+static std::set<std::string> gN3DSStreamPaths;     // each sprite file's path, kept for its streams
+static const std::string* gN3DSStreamPath;          // the one being loaded
+static uint32_t gN3DSSubfileOffset;                 // the SFF v1 sprite being loaded: where its data is
+static uint32_t gN3DSStreamedSprites;               // in the file being loaded
+
+// Two files kept open (one a character's): opening one on the SD card takes some 4 ms.
+static struct {
+	const std::string* mPath;
+	FileHandler mFile;
+	uint32_t mLastUsed;
+} gN3DSStreamFiles[2];
+static uint32_t gN3DSStreamFileUses;
+static std::vector<uint8_t> gN3DSStreamData;
+
+static FileHandler getN3DSStreamFile(const std::string* tPath) {
+	gN3DSStreamFileUses++;
+	for (auto& open : gN3DSStreamFiles) {
+		if (open.mPath == tPath && open.mFile != FILEHND_INVALID) {
+			open.mLastUsed = gN3DSStreamFileUses;
+			return open.mFile;
+		}
+	}
+	auto* slot = &gN3DSStreamFiles[0];
+	if (gN3DSStreamFiles[1].mLastUsed < slot->mLastUsed) slot = &gN3DSStreamFiles[1];
+	if (slot->mPath && slot->mFile != FILEHND_INVALID) fileClose(slot->mFile);
+	slot->mPath = tPath;
+	slot->mFile = fileOpen(tPath->c_str(), O_RDONLY);
+	slot->mLastUsed = gN3DSStreamFileUses;
+	return slot->mFile;
+}
+
+static Buffer decodeLZ5BufferAndReturnOwnedBuffer(const Buffer& b, uint32_t tFinalSize);
+static Buffer loadBufferFromRawPNGBuffer(const Buffer& tRawPNGBuffer, int tWidth, int tHeight, int tIsUsingPngPalette);
+
+static void loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight) {
+	N3DSSpriteStream* e = (N3DSSpriteStream*)tStream;
+	FileHandler file = getN3DSStreamFile(e->mPath);
+	if (file == FILEHND_INVALID) return;
+	gN3DSStreamData.resize(e->mLength + 16);
+	fileSeek(file, e->mOffset, SEEK_SET);
+	const uint32_t read = uint32_t(fileRead(file, gN3DSStreamData.data(), e->mLength));
+	if (read < e->mLength) memset(gN3DSStreamData.data() + read, 0, e->mLength - read);
+	uint8_t* data = gN3DSStreamData.data();
+
+	const uint32_t size = uint32_t(e->mBytesPerLine) * e->mHeight;
+	Buffer image = makeBuffer(NULL, 0);
+	switch (e->mKind) {
+	case N3DS_STREAM_PCX:
+		if (e->mLength > sizeof(PCXHeader)) image = decodeRLE5BufferAndReturnOwnedBuffer(makeBuffer(data + sizeof(PCXHeader), e->mLength - sizeof(PCXHeader)), size);
+		break;
+	case N3DS_STREAM_RAW:
+		image = makeBuffer(data, e->mLength);
+		break;
+	case N3DS_STREAM_RLE8:
+	case N3DS_STREAM_LZ5: {
+		if (e->mLength < 4) break;
+		uint32_t decompressedSize;
+		memcpy(&decompressedSize, data, 4);
+		const Buffer encoded = makeBuffer(data + 4, e->mLength - 4);
+		image = e->mKind == N3DS_STREAM_RLE8 ? decodeRLE8BufferAndReturnOwnedBuffer(encoded, decompressedSize) : decodeLZ5BufferAndReturnOwnedBuffer(encoded, decompressedSize);
+		break;
+	}
+	case N3DS_STREAM_PNG8:
+		image = loadBufferFromRawPNGBuffer(makeBuffer(data, e->mLength), e->mBytesPerLine, e->mHeight, 0);
+		break;
+	}
+	if (!image.mData) return;
+
+	// The piece, as getSingleAllocatedBufferFromSource cuts it.
+	const uint8_t* source = (const uint8_t*)image.mData;
+	for (int y = 0; y < tHeight; y++) {
+		const int sourceY = e->mY + y;
+		if (sourceY >= e->mHeight) break;
+		const int amount = std::min(tWidth, int(e->mWidth) - int(e->mX));
+		const size_t start = size_t(sourceY) * e->mBytesPerLine + e->mX;
+		if (amount <= 0 || start + amount > image.mLength) continue;
+		memcpy(oIndices + size_t(y) * tWidth, source + start, amount);
+	}
+	if (image.mIsOwned) freeBuffer(image);
+}
+
+static void freeN3DSSpriteStream(N3DSTextureStream* tStream) {
+	free(tStream);
+}
+
+// A sprite streamed in the pieces the loaded ones are cut in, with prism's
+// palette (tPaletteBuffer empty) or its own; empty if its palette has
+// colors partly transparent (no paletted texture for those).
+static MugenSpriteFileSprite makeN3DSStreamedSprite(int tKind, uint32_t tOffset, uint32_t tLength, int tWidth, int tHeight, int tBytesPerLine, const Buffer* tPaletteBuffer, const Vector2D& tAxisOffset) {
+	u32 colors[256];
+	const u32* palette = NULL;
+	if (tPaletteBuffer) {
+		const uint8_t* pal = (const uint8_t*)tPaletteBuffer->mData;
+		if (isRGBPalette(*tPaletteBuffer)) {
+			for (int i = 0; i < 256; i++) colors[i] = ((u32)pal[i * 3 + 0] << 24) | ((u32)pal[i * 3 + 1] << 16) | ((u32)pal[i * 3 + 2] << 8) | (i ? 0xFF : 0);
+		}
+		else {
+			for (int i = 0; i < 256; i++) {
+				if (pal[i * 4 + 0] != 0 && pal[i * 4 + 0] != 0xFF) return makeMugenSpriteFileSprite(std::vector<MugenSpriteFileSubSprite>(), makeTextureSize(tWidth, tHeight), tAxisOffset);
+				colors[i] = ((u32)pal[i * 4 + 1] << 24) | ((u32)pal[i * 4 + 2] << 16) | ((u32)pal[i * 4 + 3] << 8) | pal[i * 4 + 0];
+			}
+		}
+		palette = colors;
+	}
+
+	std::vector<MugenSpriteFileSubSprite> textures;
+	for (int y = 0; y < tHeight;) {
+		const int dy = getMaximumSizeFit(tHeight - y);
+		for (int x = 0; x < tWidth;) {
+			const int dx = getMaximumSizeFit(tWidth - x);
+			N3DSSpriteStream* stream = (N3DSSpriteStream*)malloc(sizeof(N3DSSpriteStream));
+			stream->mBase.mLoad = loadN3DSSpriteStream;
+			stream->mBase.mFree = freeN3DSSpriteStream;
+			stream->mPath = gN3DSStreamPath;
+			stream->mOffset = tOffset;
+			stream->mLength = tLength;
+			stream->mKind = (uint8_t)tKind;
+			stream->mWidth = (uint16_t)tWidth;
+			stream->mHeight = (uint16_t)tHeight;
+			stream->mBytesPerLine = (uint16_t)tBytesPerLine;
+			stream->mX = (uint16_t)x;
+			stream->mY = (uint16_t)y;
+			MugenSpriteFileSubSprite piece;
+			piece.mOffset = Vector2DI(x, y);
+			piece.mTexture = loadN3DSStreamedTexture(&stream->mBase, palette, gPrismMugenSpriteFileReaderData.mPaletteID, dx, dy);
+			textures.push_back(piece);
+			x += dx;
+		}
+		y += dy;
+	}
+	gN3DSStreamedSprites++;
+	return makeMugenSpriteFileSprite(textures, makeTextureSize(tWidth, tHeight), tAxisOffset);
+}
+#endif
+
 // SFF v1: the file's first palette, and whether the sprites now use it (the
 // ones sharing the palette before them).
 static std::vector<uint8_t> gPCXBasePalette;
@@ -949,9 +1108,13 @@ static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int
 #ifdef N3DS_HEAP_GUARD
 	if (!hasN3DSHeapRoomForSprite((size_t)pcxImageSize * 3)) {
 #if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
-		if (getenv("N3DS_SIM_TRACE_LEFT_OUT")) fprintf(stderr, "n3dssim: left out %d (%dx%d)\n", gPCXSpriteGroup, w, h);
+		if (getenv("N3DS_SIM_TRACE_LEFT_OUT")) fprintf(stderr, "n3dssim: streamed %d (%dx%d)\n", gPCXSpriteGroup, w, h);
 #endif
-		return makeMugenSpriteFileSprite(std::vector<MugenSpriteFileSubSprite>(), makeTextureSize(w, h), tAxisOffset);
+		// Read again from the file when drawn.
+		gN3DSSpritesLeftOut--;
+		const int isOnRealPalette = gIsOnPCXBasePalette && gPrismMugenSpriteFileReaderData.mIsUsingRealPalette;
+		const Buffer* palette = isOnRealPalette ? NULL : &(gIsOnPCXBasePalette ? tDst->mPalettes.front() : tDst->mPalettes.back()).mBuffer;
+		return makeN3DSStreamedSprite(N3DS_STREAM_PCX, gN3DSSubfileOffset, uint32_t(b.mLength), w, h, header.mBytesPerLine, palette, tAxisOffset);
 	}
 #endif
 	Buffer encodedImageBuffer = makeBuffer(p, encodedSize);
@@ -1090,6 +1253,9 @@ static void loadSingleSFFFileAndInsertIntoSpriteFile(const SFFSubFileHeader& sub
 	MugenSpriteFileSprite texture;
 
 	if (subHeader.mSubfileLength) {
+#ifdef N3DS_HEAP_GUARD
+		gN3DSSubfileOffset = gPrismMugenSpriteFileReaderData.mReader.mGetCurrentOffset(&gPrismMugenSpriteFileReaderData.mReader);
+#endif
 		Buffer pcxBuffer = gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, subHeader.mSubfileLength);
 		int isFirstImageWithActiveActFile = gPrismMugenSpriteFileReaderData.mHasPaletteFile && subHeader.mGroup == 0 && subHeader.mImage == 0; 
 		int isUsingOwnPalette = !subHeader.mHasSamePaletteAsPreviousImage && !isFirstImageWithActiveActFile;
@@ -1424,7 +1590,17 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 	// A PNG is decoded to 32 bits and copied once more in pieces (twice its
 	// pixels in 4 bytes), whatever its depth; the others, its 8-bit pixels.
 	if ((isPaletted || isRawPNG) && !hasN3DSHeapRoomForSprite((size_t)sprite.mWidth * sprite.mHeight * (isRawPNG ? 8 : 3) + sprite.mDataLength)) {
-		e = makeMugenSpriteFileSprite(std::vector<MugenSpriteFileSubSprite>(), makeTextureSize(sprite.mWidth, sprite.mHeight), Vector2D(sprite.mAxisX, sprite.mAxisY));
+		// Paletted ones read again from the file when drawn; the others left out.
+		const int kind = sprite.mFormat == 0 ? N3DS_STREAM_RAW : sprite.mFormat == 2 ? N3DS_STREAM_RLE8 : sprite.mFormat == 4 ? N3DS_STREAM_LZ5 : sprite.mFormat == 10 ? N3DS_STREAM_PNG8 : -1;
+		if (kind >= 0 && palette < int(tDst->mPalettes.size())) {
+			gN3DSSpritesLeftOut--;
+			const Buffer* paletteBuffer = (gPrismMugenSpriteFileReaderData.mIsUsingRealPalette && palette == 0) ? NULL : &tDst->mPalettes[palette].mBuffer;
+			const uint32_t offset = getSpriteDataOffset(&sprite, tHeader) + (kind == N3DS_STREAM_PNG8 ? 4 : 0);
+			e = makeN3DSStreamedSprite(kind, offset, sprite.mDataLength, sprite.mWidth, sprite.mHeight, sprite.mWidth, paletteBuffer, Vector2D(sprite.mAxisX, sprite.mAxisY));
+		}
+		else {
+			e = makeMugenSpriteFileSprite(std::vector<MugenSpriteFileSubSprite>(), makeTextureSize(sprite.mWidth, sprite.mHeight), Vector2D(sprite.mAxisX, sprite.mAxisY));
+		}
 	}
 	else
 #endif
@@ -1720,6 +1896,8 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	gN3DSPortraitCache.mKey = std::string(tPath) + "|" + std::to_string((unsigned long)n3dsFileSize);
 	int n3dsVariant = n3dsFileSize <= 2 * 1024 * 1024 ? N3DS_SPRITE_READ_WHOLE : N3DS_SPRITE_READ_WINDOWED;
 	gN3DSSpritesLeftOut = 0;
+	gN3DSStreamedSprites = 0;
+	gN3DSStreamPath = &*gN3DSStreamPaths.insert(std::string(tPath)).first;
 	gN3DSHeapUsedCheckedSprites = 0;
 	// Portraits found before: only a few reads, through a small buffer.
 	if (findN3DSPortraitCacheEntry()) n3dsVariant = N3DS_SPRITE_READ_PORTRAITS;
@@ -1733,6 +1911,8 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	// As on the 3DS: big files a window at a time.
 	const FileReader originalN3DSReader = gPrismMugenSpriteFileReaderData.mReader;
 	gN3DSSpritesLeftOut = 0;
+	gN3DSStreamedSprites = 0;
+	gN3DSStreamPath = &*gN3DSStreamPaths.insert(std::string(tPath)).first;
 	gN3DSHeapUsedCheckedSprites = 0;
 	if (getFileSize(tPath) > 2 * 1024 * 1024) gPrismMugenSpriteFileReaderData.mReader = getWindowedFileFileReader();
 #endif
@@ -1769,6 +1949,7 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 #if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
 	gPrismMugenSpriteFileReaderData.mReader = originalN3DSReader;
 	if (gN3DSSpritesLeftOut) fprintf(stderr, "n3dssim: %s: %d sprites left out, no room in the heap\n", tPath, gN3DSSpritesLeftOut);
+	if (gN3DSStreamedSprites) fprintf(stderr, "n3dssim: %s: %u sprites streamed (read when drawn)\n", tPath, gN3DSStreamedSprites);
 #endif
 #ifdef __3DS__
 	gPrismMugenSpriteFileReaderData.mReader = originalN3DSReader;
@@ -1781,6 +1962,7 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 			tPath, variantNames[n3dsVariant], total, io, gN3DSPerf.mReads - n3dsBefore.mReads, gN3DSPerf.mSeeks - n3dsBefore.mSeeks,
 			(gN3DSPerf.mReadBytes - n3dsBefore.mReadBytes) / 1024.0, tex, gN3DSPerf.mTextures - n3dsBefore.mTextures, total - io - tex);
 		if (gN3DSSpritesLeftOut) addN3DSPerfLine("  %d sprites left out: no room in the heap", gN3DSSpritesLeftOut);
+		if (gN3DSStreamedSprites) addN3DSPerfLine("  %u sprites streamed: read from the file when drawn", gN3DSStreamedSprites);
 	}
 #endif
 

@@ -238,7 +238,22 @@ namespace prism {
 		return index;
 	}
 
+	// Streamed textures holding their pixels (read when drawn), and the
+	// heap they take: past the budget, those drawn longest ago let theirs go.
+	static std::unordered_set<Texture> gStreamedWithPixels;
+	static size_t gStreamedBytes;
+	static const size_t STREAMED_BUDGET = 3 * 1024 * 1024;
+
+	static void letStreamedPixelsGo(Texture tTexture) {
+		gStreamedBytes -= tTexture->mIndexedSize;
+		free(tTexture->mIndexed);
+		tTexture->mIndexed = NULL;
+		tTexture->mIndexedSize = 0;
+		gStreamedWithPixels.erase(tTexture);
+	}
+
 	void forgetN3DSTexture(N3DSTextureData* tTexture) {
+		if (tTexture->mStream && tTexture->mIndexed) letStreamedPixelsGo(tTexture);
 		gResidentTextures.erase(tTexture);
 		if (tTexture->mOwnPalette >= 0 && tTexture->mOwnPalette < (int)gOwnPalettes.size()) {
 			gOwnPalettes[tTexture->mOwnPalette].mReferences--;
@@ -378,6 +393,53 @@ namespace prism {
 
 	static TextureData loadPalettedTextureFrom8BitBufferWithOwnPalette(const Buffer& b, int tPaletteID, int tWidth, int tHeight, int tOwnPalette);
 
+	TextureData loadN3DSStreamedTexture(N3DSTextureStream* tStream, const u32* tRGBAPalette, int tPaletteID, int tWidth, int tHeight) {
+		TextureData ret;
+		ret.mTextureSize.x = tWidth;
+		ret.mTextureSize.y = tHeight;
+		ret.mHasPalette = 1;
+		ret.mPaletteID = tPaletteID;
+		ret.mTexture = allocTextureMemory(sizeof(N3DSTextureData));
+		Texture texture = (Texture)ret.mTexture->mData;
+		texture->mStream = tStream;
+		if (tRGBAPalette) {
+			u16 colors[256];
+			for (int i = 0; i < 256; i++) colors[i] = toRGBA5551(tRGBAPalette[i]);
+			texture->mOwnPalette = addOwnPalette(colors);
+		}
+		gN3DSPerf.mDeferredTextures++;
+		return ret;
+	}
+
+	static std::vector<unsigned char> gStreamScratch;
+
+	// A streamed texture's pixels, read (0 if they could not be).
+	static int loadStreamedPixels(Texture tTexture, int tWidth, int tHeight) {
+		const uint64_t start = getN3DSPerfTicks();
+		std::vector<unsigned char> indices;
+		indices.swap(gStreamScratch);
+		indices.assign((size_t)tWidth * tHeight, 0);
+		tTexture->mStream->mLoad(tTexture->mStream, indices.data(), tWidth, tHeight);
+		tTexture->mIndexed = compressIndices(indices.data(), tWidth * tHeight, &tTexture->mIndexedSize);
+		indices.swap(gStreamScratch);
+		if (!tTexture->mIndexed) return 0;
+		gStreamedBytes += tTexture->mIndexedSize;
+		gStreamedWithPixels.insert(tTexture);
+		while (gStreamedBytes > STREAMED_BUDGET) {
+			Texture oldest = NULL;
+			for (const auto texture : gStreamedWithPixels) {
+				if (texture->mLastUsedFrame + 1 >= gN3DSTextureFrame) continue;
+				if (!oldest || texture->mLastUsedFrame < oldest->mLastUsedFrame) oldest = texture;
+			}
+			if (!oldest) break;
+			letStreamedPixelsGo(oldest);
+			gN3DSPerf.mStreamedLetGo++;
+		}
+		gN3DSPerf.mStreamed++;
+		gN3DSPerf.mStreamedTicks += getN3DSPerfTicks() - start;
+		return 1;
+	}
+
 	// A paletted texture's texels from its indices, with its palette as it
 	// is now; eight texels (a tile's row) at a time.
 	static void fillPalettedTexels(const TextureData& tTexture, const unsigned char* tIndices) {
@@ -466,7 +528,13 @@ namespace prism {
 
 		Texture texture = (Texture)tTexture.mTexture->mData;
 		texture->mLastUsedFrame = gN3DSTextureFrame;
-		if (!texture->mIndexed) return;
+		if (!texture->mIndexed) {
+			if (!texture->mStream) return;
+			if (!loadStreamedPixels(texture, tTexture.mTextureSize.x, tTexture.mTextureSize.y)) {
+				logWarning("Out of heap memory: a streamed sprite not drawn.");
+				return;
+			}
+		}
 		const uint64_t start = getN3DSPerfTicks();
 		int isMadeLate = 0;
 		if (!texture->mIsInitialized) {

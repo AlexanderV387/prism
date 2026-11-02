@@ -212,6 +212,11 @@ namespace prism {
 			sprintf(tDest, "%s%s", gPrismWindowsFileData.mFileSystem, expandedPath);
 		}
 		else sprintf(tDest, "%s%s%s", gPrismWindowsFileData.mFileSystem, gPrismWindowsFileData.cwd, tPath);
+#ifndef _WIN32
+		// MUGEN characters made on Windows name their files with backslashes
+		// (state\k.cmd): on the 3DS's SD card (and Linux) those are slashes.
+		cleanPathSlashes(tDest);
+#endif
 	}
 
 	FileHandler fileOpen(const char* tPath, int tFlags) {

@@ -19,6 +19,13 @@ namespace prism {
 // they are converted with their palette when drawn after it changed, and
 // their texels can be let go when memory runs short and made again when
 // drawn (texture_3ds.cpp).
+// Where a streamed paletted texture's pixels are (its sprite in its file,
+// read again when drawn): what reads them, and what lets that go.
+typedef struct N3DSTextureStream {
+	void (*mLoad)(struct N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight);
+	void (*mFree)(struct N3DSTextureStream* tStream);
+} N3DSTextureStream;
+
 typedef struct {
 	C3D_Tex mTex;
 	int mIsInitialized;
@@ -27,6 +34,7 @@ typedef struct {
 	int mOwnPalette;   // its own palette (texture_3ds.cpp's table), or -1: prism's
 	int mPaletteVersion;
 	unsigned int mLastUsedFrame;
+	N3DSTextureStream* mStream;   // streamed: its pixels read when drawn (mIndexed let go when room runs short)
 } N3DSTextureData;
 
 typedef N3DSTextureData* Texture;

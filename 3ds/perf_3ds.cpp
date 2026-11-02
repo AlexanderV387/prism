@@ -426,10 +426,11 @@ namespace prism {
 		const auto info = mallinfo();
 		char logicParts[600];
 		describeLogicParts(gPerf.mInterval.mUpdates, logicParts, sizeof(logicParts));
-		addN3DSPerfLine("  at %d s: %s | %d animations | heap %d KB used, linear memory %d KB free, %u textures made while shown, %u let go, %u made again for a palette (%.0f ms)%s",
+		addN3DSPerfLine("  at %d s: %s | %d animations | heap %d KB used, linear memory %d KB free, %u textures made while shown, %u let go, %u made again for a palette (%.0f ms), %u streamed sprites read (%.0f ms), %u let go%s",
 			gPerf.mIntervalNumber * 10, parts, getMugenAnimationHandlerLiveAmount(), (int)(info.uordblks / 1024), (int)(linearSpaceFree() / 1024),
 			gN3DSPerf.mLateTextures - gPerf.mShownCounters.mLateTextures, gN3DSPerf.mEvictedTextures - gPerf.mShownCounters.mEvictedTextures,
-			gN3DSPerf.mRepaletted - gPerf.mShownCounters.mRepaletted, getN3DSPerfMilliseconds(gN3DSPerf.mRepalettedTicks - gPerf.mShownCounters.mRepalettedTicks), logicParts);
+			gN3DSPerf.mRepaletted - gPerf.mShownCounters.mRepaletted, getN3DSPerfMilliseconds(gN3DSPerf.mRepalettedTicks - gPerf.mShownCounters.mRepalettedTicks),
+			gN3DSPerf.mStreamed - gPerf.mShownCounters.mStreamed, getN3DSPerfMilliseconds(gN3DSPerf.mStreamedTicks - gPerf.mShownCounters.mStreamedTicks), gN3DSPerf.mStreamedLetGo - gPerf.mShownCounters.mStreamedLetGo, logicParts);
 		memset(&gPerf.mInterval, 0, sizeof(gPerf.mInterval));
 	}
 
