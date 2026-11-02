@@ -30,6 +30,7 @@ namespace prism {
 	// A streamed paletted texture: no pixels kept, read through tStream
 	// when drawn (its palette prism's tPaletteID, or tRGBAPalette when not
 	// NULL); the texture lets tStream go.
+	size_t letN3DSStreamedPixelsGo(size_t tWanted);
 	TextureData loadN3DSStreamedTexture(N3DSTextureStream* tStream, const u32* tRGBAPalette, int tPaletteID, int tWidth, int tHeight);
 
 	// The palette a paletted texture's texels are made with (RGBA5551).

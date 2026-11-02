@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <exception>
+#include <new>
+#include <malloc.h>
 
 #include <3ds.h>
 
@@ -12,6 +14,10 @@
 
 #include "prism3ds.h"
 #include "prism3dsperf.h"
+
+extern "C" {
+	extern u32 __ctru_heap_size;
+}
 
 // [3DS] The console: the screens, the romfs (prism's own files) and the
 // New 3DS's speed. The HOME Menu's "close" ends the game.
@@ -34,13 +40,36 @@ namespace prism {
 	// (std::terminate's abort would end it without a word, the sound still
 	// playing as the memory goes: a crash in the sound thread).
 	static void terminateN3DS() {
-		logError("Uncaught C++ error.");
+		letN3DSStreamedPixelsGo(0);
+		const unsigned usedKB = (unsigned)(mallinfo().uordblks / 1024);
+		const unsigned heapKB = (unsigned)(__ctru_heap_size / 1024);
+		try {
+			const auto exception = std::current_exception();
+			if (exception) std::rethrow_exception(exception);
+			logError("Uncaught C++ error.");
+		}
+		catch (const std::bad_alloc&) {
+			logErrorFormat("Out of heap memory (a C++ allocation): %u KB used of %u KB.", usedKB, heapKB);
+		}
+		catch (const std::exception& e) {
+			logErrorFormat("Uncaught C++ error: %s (heap %u KB used of %u KB).", e.what(), usedKB, heapKB);
+		}
+		catch (...) {
+			logErrorFormat("Uncaught C++ error (heap %u KB used of %u KB).", usedKB, heapKB);
+		}
 		abortSystem();
+	}
+
+	// A C++ allocation with no room: the streamed sprites' pixels go (read
+	// again when drawn), then it is tried again; with none, std::bad_alloc.
+	static void newHandlerN3DS() {
+		if (!letN3DSStreamedPixelsGo(0)) throw std::bad_alloc();
 	}
 
 	void initSystem() {
 		if (gSystemN3DSData.mIsLoaded) return;
 		std::set_terminate(terminateN3DS);
+		std::set_new_handler(newHandlerN3DS);
 		osSetSpeedupEnable(true);
 		gfxInitDefault();
 		// The log on the bottom screen too (printf), while the port is young.

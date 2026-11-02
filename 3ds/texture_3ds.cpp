@@ -14,6 +14,8 @@
 #include "prism/memoryhandler.h"
 #include "prism/system.h"
 
+#include <malloc.h>
+
 #include "prism3ds.h"
 #include "prism3dsperf.h"
 
@@ -23,6 +25,10 @@
 // paletted ones as RGBA5551, 16-bit ones as RGBA4. The GPU has no palettes: paletted images
 // keep their 8-bit pixels and are converted with their palette when drawn
 // after it changed.
+
+extern "C" {
+	extern u32 __ctru_heap_size;
+}
 
 namespace prism {
 
@@ -252,8 +258,44 @@ namespace prism {
 		gStreamedWithPixels.erase(tTexture);
 	}
 
+	static std::vector<unsigned char> gStreamScratch;
+	static Texture gStreamedInUse;       // the one last read or made: kept
+	static int gIsChangingStreamed;      // the set being changed: not let go now
+
+	// Lets streamed pixels go, those drawn longest ago first, until tWanted
+	// bytes are free (0: all of them); the bytes freed. Also from the C++
+	// allocation's handler (system_3ds.cpp), when the heap runs out.
+	size_t letN3DSStreamedPixelsGo(size_t tWanted) {
+		if (gIsChangingStreamed) return 0;
+		size_t freed = 0;
+		while (!gStreamedWithPixels.empty() && (!tWanted || freed < tWanted)) {
+			Texture oldest = NULL;
+			for (const auto texture : gStreamedWithPixels) {
+				if (texture == gStreamedInUse) continue;
+				if (!oldest || texture->mLastUsedFrame < oldest->mLastUsedFrame) oldest = texture;
+			}
+			if (!oldest) break;
+			freed += oldest->mIndexedSize;
+			letStreamedPixelsGo(oldest);
+			gN3DSPerf.mStreamedLetGo++;
+		}
+		if ((!tWanted || freed < tWanted) && gStreamScratch.capacity()) {
+			freed += gStreamScratch.capacity();
+			std::vector<unsigned char>().swap(gStreamScratch);
+		}
+		return freed;
+	}
+
+	// The heap not in use (newlib's: what malloc has handed out, from the
+	// heap's size).
+	static size_t getN3DSHeapFree() {
+		const size_t used = mallinfo().uordblks;
+		return __ctru_heap_size > used ? __ctru_heap_size - used : 0;
+	}
+
 	void forgetN3DSTexture(N3DSTextureData* tTexture) {
 		if (tTexture->mStream && tTexture->mIndexed) letStreamedPixelsGo(tTexture);
+		if (gStreamedInUse == tTexture) gStreamedInUse = NULL;
 		gResidentTextures.erase(tTexture);
 		if (tTexture->mOwnPalette >= 0 && tTexture->mOwnPalette < (int)gOwnPalettes.size()) {
 			gOwnPalettes[tTexture->mOwnPalette].mReferences--;
@@ -411,11 +453,20 @@ namespace prism {
 		return ret;
 	}
 
-	static std::vector<unsigned char> gStreamScratch;
+	// Heap kept free when streamed pixels are read: the fight's own
+	// allocations (helpers, explods) come first.
+	static const size_t STREAMED_HEAP_HEADROOM = 2 * 1024 * 1024;
 
 	// A streamed texture's pixels, read (0 if they could not be).
 	static int loadStreamedPixels(Texture tTexture, int tWidth, int tHeight) {
 		const uint64_t start = getN3DSPerfTicks();
+		gStreamedInUse = tTexture;
+		{
+			const size_t need = (size_t)tWidth * tHeight * 2 + STREAMED_HEAP_HEADROOM;
+			const size_t heapFree = getN3DSHeapFree();
+			if (heapFree < need) letN3DSStreamedPixelsGo(need - heapFree);
+			if (getN3DSHeapFree() < (size_t)tWidth * tHeight * 2 + 512 * 1024) return 0;
+		}
 		std::vector<unsigned char> indices;
 		indices.swap(gStreamScratch);
 		indices.assign((size_t)tWidth * tHeight, 0);
@@ -424,7 +475,9 @@ namespace prism {
 		indices.swap(gStreamScratch);
 		if (!tTexture->mIndexed) return 0;
 		gStreamedBytes += tTexture->mIndexedSize;
+		gIsChangingStreamed = 1;
 		gStreamedWithPixels.insert(tTexture);
+		gIsChangingStreamed = 0;
 		while (gStreamedBytes > STREAMED_BUDGET) {
 			Texture oldest = NULL;
 			for (const auto texture : gStreamedWithPixels) {
@@ -528,6 +581,7 @@ namespace prism {
 
 		Texture texture = (Texture)tTexture.mTexture->mData;
 		texture->mLastUsedFrame = gN3DSTextureFrame;
+		if (texture->mStream) gStreamedInUse = texture;
 		if (!texture->mIndexed) {
 			if (!texture->mStream) return;
 			if (!loadStreamedPixels(texture, tTexture.mTextureSize.x, tTexture.mTextureSize.y)) {

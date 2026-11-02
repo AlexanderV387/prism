@@ -30,6 +30,7 @@
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 #include "3ds/prism3ds.h"
 #include <malloc.h>
+#include <new>
 // The heap guard, on the 3DS and in its simulation.
 #define N3DS_HEAP_GUARD
 #endif
@@ -949,7 +950,13 @@ static void loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oInd
 	N3DSSpriteStream* e = (N3DSSpriteStream*)tStream;
 	FileHandler file = getN3DSStreamFile(e->mPath);
 	if (file == FILEHND_INVALID) return;
-	gN3DSStreamData.resize(e->mLength + 16);
+	try {
+		gN3DSStreamData.resize(e->mLength + 16);
+	}
+	catch (const std::bad_alloc&) {
+		std::vector<uint8_t>().swap(gN3DSStreamData);
+		return;
+	}
 	fileSeek(file, e->mOffset, SEEK_SET);
 	const uint32_t read = uint32_t(fileRead(file, gN3DSStreamData.data(), e->mLength));
 	if (read < e->mLength) memset(gN3DSStreamData.data() + read, 0, e->mLength - read);
@@ -990,6 +997,8 @@ static void loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oInd
 		memcpy(oIndices + size_t(y) * tWidth, source + start, amount);
 	}
 	if (image.mIsOwned) freeBuffer(image);
+	// A big sprite's data is not kept: the heap is short in these fights.
+	if (gN3DSStreamData.capacity() > 256 * 1024) std::vector<uint8_t>().swap(gN3DSStreamData);
 }
 
 static void freeN3DSSpriteStream(N3DSTextureStream* tStream) {
