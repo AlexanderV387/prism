@@ -282,6 +282,7 @@ namespace prism {
 			gN3DSPerf.mStreamedLetGo++;
 		}
 		if (!tWanted && gN3DSLetStreamCacheGo) freed += gN3DSLetStreamCacheGo();
+		if (!tWanted && gStreamedWithPixels.empty() && gStreamedWithPixels.bucket_count() > 16) std::unordered_set<Texture>().swap(gStreamedWithPixels);
 		if ((!tWanted || freed < tWanted) && gStreamScratch.capacity()) {
 			freed += gStreamScratch.capacity();
 			std::vector<unsigned char>().swap(gStreamScratch);

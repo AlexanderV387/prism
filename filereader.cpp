@@ -3,6 +3,10 @@
 #include "prism/memoryhandler.h"
 
 #include <string.h>
+#include <stdlib.h>
+
+#include "prism/log.h"
+#include "prism/system.h"
 
 namespace prism {
 
@@ -174,6 +178,7 @@ namespace prism {
 		FileHandler mFile;
 		uint32_t mFileSize;
 		uint32_t mPosition;
+		uint32_t mWindowSize;   // 512 KB, less when the heap has no room in one piece
 		FileReaderWindow mWindows[FILE_READER_WINDOW_AMOUNT];
 		uint32_t mUseCounter;
 		int mIsOver;
@@ -184,9 +189,23 @@ namespace prism {
 		data->mFile = fileOpen(tPath, O_RDONLY);
 		data->mFileSize = uint32_t(fileTotal(data->mFile));
 		data->mPosition = 0;
+		// Outside the memory handler: a window that does not fit (the heap in
+		// pieces after a big fight) is made smaller, not the game's end.
+		for (data->mWindowSize = FILE_READER_WINDOW_SIZE;; data->mWindowSize /= 2) {
+			int isAllocated = 1;
+			for (auto& window : data->mWindows) {
+				window.mData = (char*)malloc(data->mWindowSize);
+				if (!window.mData) isAllocated = 0;
+				window.mStart = window.mLength = window.mLastUsed = 0;
+			}
+			if (isAllocated || data->mWindowSize <= 16 * 1024) break;
+			for (auto& window : data->mWindows) free(window.mData);
+		}
 		for (auto& window : data->mWindows) {
-			window.mData = (char*)allocMemory(FILE_READER_WINDOW_SIZE);
-			window.mStart = window.mLength = window.mLastUsed = 0;
+			if (!window.mData) {
+				logErrorFormat("No room for a file reader's window (%u bytes).", (unsigned)data->mWindowSize);
+				recoverFromError();
+			}
 		}
 		data->mUseCounter = 0;
 		data->mIsOver = 0;
@@ -196,7 +215,7 @@ namespace prism {
 	static void deleteWindowedFileReader(FileReader* tReader) {
 		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
 		fileClose(data->mFile);
-		for (auto& window : data->mWindows) freeMemory(window.mData);
+		for (auto& window : data->mWindows) free(window.mData);
 		freeMemory(data);
 	}
 
@@ -220,7 +239,7 @@ namespace prism {
 		window->mLength = 0;
 		window->mLastUsed = ++tData->mUseCounter;
 		if (tPosition >= tData->mFileSize) return window;
-		const uint32_t length = tData->mFileSize - tPosition < FILE_READER_WINDOW_SIZE ? tData->mFileSize - tPosition : FILE_READER_WINDOW_SIZE;
+		const uint32_t length = tData->mFileSize - tPosition < tData->mWindowSize ? tData->mFileSize - tPosition : tData->mWindowSize;
 		fileSeek(tData->mFile, tPosition, SEEK_SET);
 		window->mLength = uint32_t(fileRead(tData->mFile, window->mData, length));
 		return window;
@@ -232,7 +251,7 @@ namespace prism {
 		while (tSize) {
 			FileReaderWindow* window = findWindow(data, data->mPosition, 1);
 			if (!window) {
-				if (tSize >= FILE_READER_WINDOW_SIZE) {
+				if (tSize >= data->mWindowSize) {
 					fileSeek(data->mFile, data->mPosition, SEEK_SET);
 					const uint32_t read = uint32_t(fileRead(data->mFile, dst, tSize));
 					data->mPosition += read;
@@ -268,7 +287,7 @@ namespace prism {
 	static Buffer readWindowedFileReaderBuffer(FileReader* tReader, uint32_t tSize) {
 		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
 		FileReaderWindow* window = findWindow(data, data->mPosition, tSize);
-		if (!window && tSize < FILE_READER_WINDOW_SIZE) {
+		if (!window && tSize < data->mWindowSize) {
 			window = fillWindow(data, data->mPosition);
 			if (!(data->mPosition + tSize <= window->mStart + window->mLength)) window = NULL;
 		}

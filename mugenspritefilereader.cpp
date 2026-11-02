@@ -948,22 +948,21 @@ static Buffer loadBufferFromRawPNGBuffer(const Buffer& tRawPNGBuffer, int tWidth
 
 // The last sprite read whole, kept for its other pieces (a big one is cut
 // in several: each read it whole from the card, 17 ms a piece).
+// Its own copy, not the memory handler's (which frees a screen's blocks at
+// its end, under it).
 static struct {
 	const std::string* mPath;
 	uint32_t mOffset;
-	Buffer mImage;
+	std::vector<uint8_t> mImage;
 } gN3DSStreamCache;
 
 static int gIsLoadingN3DSStream;   // its data in use: not let go meanwhile
+static uint32_t gN3DSLiveStreams;  // the streamed textures there are
 
 static size_t letN3DSStreamCacheGo() {
 	if (gIsLoadingN3DSStream) return 0;
-	size_t freed = gN3DSStreamData.capacity();
-	if (gN3DSStreamCache.mImage.mData && gN3DSStreamCache.mImage.mIsOwned) {
-		freed += gN3DSStreamCache.mImage.mLength;
-		freeBuffer(gN3DSStreamCache.mImage);
-	}
-	gN3DSStreamCache.mImage = makeBuffer(NULL, 0);
+	const size_t freed = gN3DSStreamData.capacity() + gN3DSStreamCache.mImage.capacity();
+	std::vector<uint8_t>().swap(gN3DSStreamCache.mImage);
 	gN3DSStreamCache.mPath = NULL;
 	std::vector<uint8_t>().swap(gN3DSStreamData);
 	return freed;
@@ -974,8 +973,8 @@ static void copyN3DSStreamPiece(const N3DSSpriteStream* e, const Buffer& tImage,
 
 static void loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight) {
 	N3DSSpriteStream* e = (N3DSSpriteStream*)tStream;
-	if (gN3DSStreamCache.mImage.mData && gN3DSStreamCache.mPath == e->mPath && gN3DSStreamCache.mOffset == e->mOffset) {
-		copyN3DSStreamPiece(e, gN3DSStreamCache.mImage, oIndices, tWidth, tHeight);
+	if (!gN3DSStreamCache.mImage.empty() && gN3DSStreamCache.mPath == e->mPath && gN3DSStreamCache.mOffset == e->mOffset) {
+		copyN3DSStreamPiece(e, makeBuffer(gN3DSStreamCache.mImage.data(), uint32_t(gN3DSStreamCache.mImage.size())), oIndices, tWidth, tHeight);
 		return;
 	}
 	letN3DSStreamCacheGo();
@@ -1046,18 +1045,35 @@ static void loadN3DSSpriteStreamUnguarded(N3DSSpriteStream* e, unsigned char* oI
 	copyN3DSStreamPiece(e, image, oIndices, tWidth, tHeight);
 	// Kept for the sprite's other pieces when cut in several.
 	const int isInPieces = e->mWidth > tWidth || e->mHeight > tHeight;
-	if (isInPieces && image.mIsOwned) {
-		gN3DSStreamCache.mPath = e->mPath;
-		gN3DSStreamCache.mOffset = e->mOffset;
-		gN3DSStreamCache.mImage = image;
+	if (isInPieces) {
+		try {
+			gN3DSStreamCache.mImage.assign((const uint8_t*)image.mData, (const uint8_t*)image.mData + image.mLength);
+			gN3DSStreamCache.mPath = e->mPath;
+			gN3DSStreamCache.mOffset = e->mOffset;
+		}
+		catch (const std::bad_alloc&) {
+			std::vector<uint8_t>().swap(gN3DSStreamCache.mImage);
+			gN3DSStreamCache.mPath = NULL;
+		}
 	}
-	else if (image.mIsOwned) freeBuffer(image);
+	if (image.mIsOwned) freeBuffer(image);
 	// A big sprite's data is not kept: the heap is short in these fights.
 	if (gN3DSStreamData.capacity() > 256 * 1024) std::vector<uint8_t>().swap(gN3DSStreamData);
 }
 
+// The fight's last one gone: its files closed and what was kept let go,
+// so that nothing is left in the middle of the heap for the next one.
 static void freeN3DSSpriteStream(N3DSTextureStream* tStream) {
 	free(tStream);
+	if (gN3DSLiveStreams && --gN3DSLiveStreams) return;
+	letN3DSStreamedPixelsGo(0);
+	letN3DSStreamCacheGo();
+	for (auto& open : gN3DSStreamFiles) {
+		if (open.mPath && open.mFile != FILEHND_INVALID) fileClose(open.mFile);
+		open.mPath = NULL;
+		open.mFile = FILEHND_INVALID;
+		open.mLastUsed = 0;
+	}
 }
 
 // A sprite streamed in the pieces the loaded ones are cut in, with prism's
@@ -1087,6 +1103,7 @@ static MugenSpriteFileSprite makeN3DSStreamedSprite(int tKind, uint32_t tOffset,
 		for (int x = 0; x < tWidth;) {
 			const int dx = getMaximumSizeFit(tWidth - x);
 			N3DSSpriteStream* stream = (N3DSSpriteStream*)malloc(sizeof(N3DSSpriteStream));
+			gN3DSLiveStreams++;
 			stream->mBase.mLoad = loadN3DSSpriteStream;
 			stream->mBase.mFree = freeN3DSSpriteStream;
 			stream->mPath = gN3DSStreamPath;
