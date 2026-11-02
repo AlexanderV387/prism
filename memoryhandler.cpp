@@ -33,6 +33,10 @@
 #include "prism/texture.h"
 #endif
 
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+#include "3ds/prism3ds.h"
+#endif
+
 using namespace std;
 namespace prism {
 
@@ -497,6 +501,10 @@ namespace prism {
 
 	static void* mainMemoryAllocFunc(size_t tSize) {
 		char* raw = (char*)malloc(MEMORY_HANDLER_ENTRY_SIZE + tSize);
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+		// [3DS] The streamed sprites' pixels go first (read again when drawn).
+		if (!raw && letN3DSStreamedPixelsGo(0)) raw = (char*)malloc(MEMORY_HANDLER_ENTRY_SIZE + tSize);
+#endif
 		if (!raw) abortOnFailedMainMemoryAllocation(tSize);
 		initMemoryHandlerEntry((MemoryHandlerMapEntry*)(void*)raw);
 		return raw + MEMORY_HANDLER_ENTRY_SIZE;
@@ -508,6 +516,9 @@ namespace prism {
 
 	static void* mainMemoryReallocFunc(void* tPointer, size_t tSize) {
 		char* raw = (char*)realloc(((char*)tPointer) - MEMORY_HANDLER_ENTRY_SIZE, MEMORY_HANDLER_ENTRY_SIZE + tSize);
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+		if (!raw && letN3DSStreamedPixelsGo(0)) raw = (char*)realloc(((char*)tPointer) - MEMORY_HANDLER_ENTRY_SIZE, MEMORY_HANDLER_ENTRY_SIZE + tSize);
+#endif
 		if (!raw) abortOnFailedMainMemoryAllocation(tSize);
 		return raw + MEMORY_HANDLER_ENTRY_SIZE;
 	}

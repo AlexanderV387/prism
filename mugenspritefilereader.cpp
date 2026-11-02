@@ -954,11 +954,41 @@ static struct {
 	Buffer mImage;
 } gN3DSStreamCache;
 
-static void letN3DSStreamCacheGo() {
-	if (gN3DSStreamCache.mImage.mData && gN3DSStreamCache.mImage.mIsOwned) freeBuffer(gN3DSStreamCache.mImage);
+static int gIsLoadingN3DSStream;   // its data in use: not let go meanwhile
+
+static size_t letN3DSStreamCacheGo() {
+	if (gIsLoadingN3DSStream) return 0;
+	size_t freed = gN3DSStreamData.capacity();
+	if (gN3DSStreamCache.mImage.mData && gN3DSStreamCache.mImage.mIsOwned) {
+		freed += gN3DSStreamCache.mImage.mLength;
+		freeBuffer(gN3DSStreamCache.mImage);
+	}
 	gN3DSStreamCache.mImage = makeBuffer(NULL, 0);
 	gN3DSStreamCache.mPath = NULL;
 	std::vector<uint8_t>().swap(gN3DSStreamData);
+	return freed;
+}
+
+static void loadN3DSSpriteStreamUnguarded(N3DSSpriteStream* e, unsigned char* oIndices, int tWidth, int tHeight);
+static void copyN3DSStreamPiece(const N3DSSpriteStream* e, const Buffer& tImage, unsigned char* oIndices, int tWidth, int tHeight);
+
+static void loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight) {
+	N3DSSpriteStream* e = (N3DSSpriteStream*)tStream;
+	if (gN3DSStreamCache.mImage.mData && gN3DSStreamCache.mPath == e->mPath && gN3DSStreamCache.mOffset == e->mOffset) {
+		copyN3DSStreamPiece(e, gN3DSStreamCache.mImage, oIndices, tWidth, tHeight);
+		return;
+	}
+	letN3DSStreamCacheGo();
+	// The whole sprite, read and decoded, with room left: else not drawn
+	// this time (out of heap in a fight is the game's end).
+	const size_t need = size_t(e->mBytesPerLine) * e->mHeight + e->mLength + 768 * 1024;
+	if (getN3DSHeapFree() < need) {
+		letN3DSStreamedPixelsGo(need - getN3DSHeapFree());
+		if (getN3DSHeapFree() < need) return;
+	}
+	gIsLoadingN3DSStream = 1;
+	loadN3DSSpriteStreamUnguarded(e, oIndices, tWidth, tHeight);
+	gIsLoadingN3DSStream = 0;
 }
 
 static void copyN3DSStreamPiece(const N3DSSpriteStream* e, const Buffer& tImage, unsigned char* oIndices, int tWidth, int tHeight) {
@@ -974,13 +1004,7 @@ static void copyN3DSStreamPiece(const N3DSSpriteStream* e, const Buffer& tImage,
 	}
 }
 
-static void loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight) {
-	N3DSSpriteStream* e = (N3DSSpriteStream*)tStream;
-	if (gN3DSStreamCache.mImage.mData && gN3DSStreamCache.mPath == e->mPath && gN3DSStreamCache.mOffset == e->mOffset) {
-		copyN3DSStreamPiece(e, gN3DSStreamCache.mImage, oIndices, tWidth, tHeight);
-		return;
-	}
-	letN3DSStreamCacheGo();
+static void loadN3DSSpriteStreamUnguarded(N3DSSpriteStream* e, unsigned char* oIndices, int tWidth, int tHeight) {
 	FileHandler file = getN3DSStreamFile(e->mPath);
 	if (file == FILEHND_INVALID) return;
 	try {

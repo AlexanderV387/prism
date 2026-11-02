@@ -30,8 +30,10 @@ namespace prism {
 	// Lets streamed textures' pixels go, those drawn longest ago first, until
 	// tWanted bytes are free (0: all); the bytes freed.
 	size_t letN3DSStreamedPixelsGo(size_t tWanted);
+	// The heap not in use, from newlib's count and the heap's size.
+	size_t getN3DSHeapFree();
 	// What the sprite reader keeps of the last streamed sprite, let go with them.
-	extern void (*gN3DSLetStreamCacheGo)();
+	extern size_t (*gN3DSLetStreamCacheGo)();
 
 	// A sound read by tRead straight into linear memory (soundeffect_3ds.cpp);
 	// its ID, -1 if it could not be, -2 if it has to be read whole first.
