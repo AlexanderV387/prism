@@ -90,9 +90,7 @@ namespace prism {
 
 	}
 
-	static void handleSinglePhysicsObjectInList(void* tCaller, PhysicsHandlerElement& tData) {
-		(void)tCaller;
-		PhysicsHandlerElement* data = &tData;
+	static void handleSinglePhysicsObject(PhysicsHandlerElement* data) {
 		if (data->mIsPaused) return;
 		data->mTimeDilatationNow += data->mTimeDilatation;
 		int updateAmount = (int)data->mTimeDilatationNow;
@@ -109,6 +107,20 @@ namespace prism {
 		}
 	}
 
+	static void handleSinglePhysicsObjectInList(void* tCaller, PhysicsHandlerElement& tData) {
+		(void)tCaller;
+		if (tData.mIsUpdatedByOwner) return;
+		handleSinglePhysicsObject(&tData);
+	}
+
+	void setHandledPhysicsUpdatedByOwner(PhysicsHandlerElement* data, int tIsUpdatedByOwner) {
+		data->mIsUpdatedByOwner = tIsUpdatedByOwner;
+	}
+
+	void updateHandledPhysicsNow(PhysicsHandlerElement* data) {
+		handleSinglePhysicsObject(data);
+	}
+
 	void updatePhysicsHandler() {
 		stl_int_map_map(gPhysicsHandler.mList, handleSinglePhysicsObjectInList);
 	}
@@ -123,6 +135,7 @@ namespace prism {
 		data.mIsPaused = 0;
 		data.mTimeDilatation = 1.0;
 		data.mTimeDilatationNow = 0.0;
+		data.mIsUpdatedByOwner = 0;
 
 		const auto id = stl_int_map_push_back(gPhysicsHandler.mList, data);
 		auto& element = gPhysicsHandler.mList[id];

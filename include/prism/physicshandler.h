@@ -14,6 +14,8 @@ struct PhysicsHandlerElement {
 
 	float mTimeDilatationNow;
 	float mTimeDilatation;
+
+	int mIsUpdatedByOwner;
 };
 
 void setupPhysicsHandler();
@@ -30,6 +32,10 @@ Acceleration* getHandledPhysicsAccelerationReference(PhysicsHandlerElement* tEle
 void addAccelerationToHandledPhysics(PhysicsHandlerElement* tElement, const Acceleration& tAccel);
 void stopHandledPhysics(PhysicsHandlerElement* tElement);
 void pauseHandledPhysics(PhysicsHandlerElement* tElement);
+// An element its owner moves itself, when it wants (updateHandledPhysicsNow),
+// left out of the handler's update of the others.
+void setHandledPhysicsUpdatedByOwner(PhysicsHandlerElement* tElement, int tIsUpdatedByOwner);
+void updateHandledPhysicsNow(PhysicsHandlerElement* tElement);
 void resumeHandledPhysics(PhysicsHandlerElement* tElement);
 
 void setHandledPhysicsMaxVelocity(PhysicsHandlerElement* tElement, float tVelocity);
