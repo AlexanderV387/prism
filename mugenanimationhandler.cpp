@@ -1333,10 +1333,13 @@ static MugenSpriteFileSprite* findMugenSpriteToDraw(MugenAnimationHandlerElement
 float getN3DSScreenSideMargin();
 #endif
 
-// [3DS] A sprite that covers the game's screen from side to side (within a
-// few pixels), but not the top screen's sides past it: widened from the
-// screen's middle until it does (New Kyouki's and others' 320x240 flashes
-// and backgrounds left the sides uncovered).
+// [3DS] A sprite the size of the game's screen as drawn (a super's flash, a
+// full-screen background), mostly on it: widened to cover the top screen's
+// wider sides, from side to side. Placed by the players (postype p1), it can
+// also be off the game's screen by a few pixels here and not in MUGEN (the
+// camera stops elsewhere near the stage's edges, seeing wider): covered
+// all the same (New Kyouki's flashes left the left side uncovered,
+// Felicia's the right).
 static void findMugenAnimationScreenStretch(MugenAnimationHandlerElement* e, DrawSingleMugenAnimationSpriteCaller& tCaller) {
 	tCaller.mStretchX = 1.0f;
 	tCaller.mStretchCenterX = 0;
@@ -1374,16 +1377,20 @@ static void findMugenAnimationScreenStretch(MugenAnimationHandlerElement* e, Dra
 	right = scaleCenter + (right - scaleCenter) * scaleX;
 	if (left > right) std::swap(left, right);
 
-	const float width = (float)getScreenSize().x;
-	const float tolerance = width * 0.03f;
-	if (left > tolerance || right < width - tolerance) return;     // not over the whole screen
-	if (left <= -margin && right >= width + margin) return;        // already past the sides
-	const float center = width / 2;
-	float stretch = 1.0f;
-	if (left < center) stretch = std::max(stretch, (center + margin) / (center - left));
-	if (right > center) stretch = std::max(stretch, (center + margin) / (right - center));
-	tCaller.mStretchX = std::min(stretch, 1.6f);
-	tCaller.mStretchCenterX = center;
+	const ScreenSize screen = getScreenSize();
+	const float width = (float)screen.x;
+	const float drawnWidth = right - left;
+	const float drawnHeight = fabsf(e->mSprite->mOriginalTextureSize.y * tCaller.mScale.y * tCaller.mStepScaleY);
+	if (drawnWidth < width * 0.9f || drawnWidth > width * 1.3f) return;   // not the screen's size
+	if (drawnHeight < screen.y * 0.85f) return;
+	if (left <= -margin && right >= width + margin) return;               // already over the sides
+	if (left > width * 0.3f || right < width * 0.7f) return;              // mostly off the screen
+	const float stretch = (width + 2 * margin) / drawnWidth;
+	if (stretch < 1.001f || stretch > 1.6f) return;
+	// Its sides onto the top screen's: x' = c + (x - c) * stretch, with the
+	// left side going to -margin.
+	tCaller.mStretchX = stretch;
+	tCaller.mStretchCenterX = (margin + left * stretch) / (stretch - 1);
 #if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
 	if (getenv("N3DS_SIM_TRACE_STRETCH")) fprintf(stderr, "n3dssim: stretched anim %d (%dx%d) from %.0f..%.0f by %.2f\n", e->mAnimation ? e->mAnimation->mID : -1,
 		(int)e->mSprite->mOriginalTextureSize.x, (int)e->mSprite->mOriginalTextureSize.y, left, right, tCaller.mStretchX);
