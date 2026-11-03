@@ -50,8 +50,90 @@ static int isHeapLimited() {
 	return gHeapLimitState;
 }
 
+// N3DS_SIM_TRACK: who made each block still there (the blocks made in a
+// fight and kept after it: in the heap's middle on the 3DS, in pieces).
+#include <execinfo.h>
+#include <vector>
+#include <algorithm>
+#include <string>
+#include <unordered_map>
+#include <map>
+#include <mutex>
+struct TrackedAllocation { size_t mSize; unsigned mGeneration; void* mCallers[8]; int mDepth; };
+static std::unordered_map<void*, TrackedAllocation>* gTracked;
+static std::mutex gTrackedMutex;
+static thread_local int gIsTracking;
+static unsigned gTrackGeneration;
+static int isTrackingAllocations() {
+	static int state = -1;
+	if (state < 0) state = getenv("N3DS_SIM_TRACK") ? 1 : 0;
+	return state;
+}
+static void trackAllocation(void* tPointer, size_t tSize) {
+	if (!tPointer || !isTrackingAllocations() || gIsTracking) return;
+	gIsTracking = 1;
+	TrackedAllocation e;
+	e.mSize = tSize;
+	e.mGeneration = gTrackGeneration;
+	e.mDepth = backtrace(e.mCallers, 8);
+	{
+		std::lock_guard<std::mutex> lock(gTrackedMutex);
+		if (!gTracked) gTracked = new std::unordered_map<void*, TrackedAllocation>();
+		(*gTracked)[tPointer] = e;
+	}
+	gIsTracking = 0;
+}
+static void untrackAllocation(void* tPointer) {
+	if (!tPointer || !isTrackingAllocations() || gIsTracking) return;
+	gIsTracking = 1;
+	{
+		std::lock_guard<std::mutex> lock(gTrackedMutex);
+		if (gTracked) gTracked->erase(tPointer);
+	}
+	gIsTracking = 0;
+}
+extern "C" void n3dssimMarkAllocations() { gTrackGeneration++; }
+// The blocks made since the mark and still there, by who made them.
+extern "C" void n3dssimDumpAllocations(size_t tMinimumTotal) {
+	if (!gTracked) return;
+	gIsTracking = 1;
+	std::map<std::string, std::pair<size_t, size_t>> bySite;
+	{
+		std::lock_guard<std::mutex> lock(gTrackedMutex);
+		for (const auto& entry : *gTracked) {
+			const TrackedAllocation& e = entry.second;
+			if (e.mGeneration < gTrackGeneration) continue;
+			char** names = backtrace_symbols(e.mCallers, e.mDepth);
+			std::string site;
+			for (int i = 2; i < e.mDepth && i < 7; i++) {
+				std::string name = names ? names[i] : "?";
+				const size_t open = name.find('('), plus = name.find('+');
+				if (open != std::string::npos && plus != std::string::npos && plus > open) name = name.substr(open + 1, plus - open - 1);
+				site += name + " < ";
+			}
+			free(names);
+			auto& totals = bySite[site];
+			totals.first += e.mSize;
+			totals.second++;
+		}
+	}
+	std::vector<std::pair<size_t, std::string>> sorted;
+	size_t total = 0, blocks = 0;
+	for (const auto& entry : bySite) { sorted.push_back(std::make_pair(entry.second.first, entry.first + " (" + std::to_string(entry.second.second) + " blocks)")); total += entry.second.first; blocks += entry.second.second; }
+	std::sort(sorted.rbegin(), sorted.rend());
+	fprintf(stderr, "n3dssim: %zu bytes in %zu blocks made since the mark still there\n", total, blocks);
+	for (const auto& entry : sorted) {
+		if (entry.first < tMinimumTotal) break;
+		fprintf(stderr, "  %8zu %s\n", entry.first, entry.second.c_str());
+	}
+	gIsTracking = 0;
+}
+
 static void* countAllocation(void* tPointer) {
-	if (tPointer) gHeapUsed += malloc_usable_size(tPointer);
+	if (tPointer) {
+		gHeapUsed += malloc_usable_size(tPointer);
+		trackAllocation(tPointer, malloc_usable_size(tPointer));
+	}
 	return tPointer;
 }
 
@@ -63,6 +145,7 @@ extern "C" {
 	void* malloc(size_t tSize) { return hasHeapRoom(tSize) ? countAllocation(__libc_malloc(tSize)) : NULL; }
 	void free(void* tPointer) {
 		if (tPointer) gHeapUsed -= malloc_usable_size(tPointer);
+		untrackAllocation(tPointer);
 		__libc_free(tPointer);
 	}
 	void* calloc(size_t tAmount, size_t tSize) { return hasHeapRoom(tAmount * tSize) ? countAllocation(__libc_calloc(tAmount, tSize)) : NULL; }
@@ -70,7 +153,10 @@ extern "C" {
 		const size_t before = tPointer ? malloc_usable_size(tPointer) : 0;
 		if (tSize > before && !hasHeapRoom(tSize - before)) return NULL;
 		void* ret = __libc_realloc(tPointer, tSize);
-		if (ret || !tSize) gHeapUsed -= before;
+		if (ret || !tSize) {
+			gHeapUsed -= before;
+			untrackAllocation(tPointer);
+		}
 		return countAllocation(ret);
 	}
 	void* memalign(size_t tAlignment, size_t tSize) { return hasHeapRoom(tSize) ? countAllocation(__libc_memalign(tAlignment, tSize)) : NULL; }

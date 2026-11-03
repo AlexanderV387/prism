@@ -196,6 +196,13 @@ namespace prism {
 	static std::unordered_set<Texture> gResidentTextures;   // paletted, with texels
 	static std::vector<unsigned char> gIndexScratch;
 
+	// Its biggest at once, the first time (the menus, low in the heap): grown
+	// in a fight's loading it stayed high in the heap between fights.
+	static void reserveIndexScratch() {
+		static const size_t MOST = (size_t)MAXIMUM_TEXTURE_SIZE * MAXIMUM_TEXTURE_SIZE * 129 / 128 + 2;
+		if (gIndexScratch.capacity() < MOST) gIndexScratch.reserve(MOST);
+	}
+
 	// Time spent this frame reading streamed sprites on the game's core (the
 	// small ones are read there at once, while it lasts).
 	uint64_t gN3DSStreamSyncTicksThisFrame;
@@ -213,6 +220,7 @@ namespace prism {
 	} OwnPalette;
 	static std::vector<OwnPalette> gOwnPalettes;
 	static std::unordered_multimap<uint32_t, int> gOwnPaletteIndices;   // by a hash of the colors
+	static int gOwnPaletteReferences;   // all of them: at 0 the tables are let go (see forgetN3DSTexture)
 
 	static uint32_t hashColors(const u16* tColors) {
 		uint32_t hash = 2166136261u;
@@ -227,6 +235,7 @@ namespace prism {
 			auto& palette = gOwnPalettes[it->second];
 			if (palette.mReferences && !memcmp(palette.mColors, tColors, sizeof(palette.mColors))) {
 				palette.mReferences++;
+				gOwnPaletteReferences++;
 				return it->second;
 			}
 		}
@@ -247,6 +256,7 @@ namespace prism {
 		}
 		memcpy(gOwnPalettes[index].mColors, tColors, sizeof(gOwnPalettes[index].mColors));
 		gOwnPalettes[index].mReferences = 1;
+		gOwnPaletteReferences++;
 		gOwnPaletteIndices.insert(std::make_pair(hash, index));
 		return index;
 	}
@@ -340,6 +350,15 @@ namespace prism {
 		gResidentTextures.erase(tTexture);
 		if (tTexture->mOwnPalette >= 0 && tTexture->mOwnPalette < (int)gOwnPalettes.size()) {
 			gOwnPalettes[tTexture->mOwnPalette].mReferences--;
+			// The last one gone (a fight's end): the tables let go whole. Made
+			// in a fight's loading, high in a full heap, they stayed there
+			// between fights (New Kyouki's 1200 palettes: 2 MB), the next
+			// fight's room in pieces.
+			if (--gOwnPaletteReferences <= 0) {
+				gOwnPaletteReferences = 0;
+				std::vector<OwnPalette>().swap(gOwnPalettes);
+				std::unordered_multimap<uint32_t, int>().swap(gOwnPaletteIndices);
+			}
 			tTexture->mOwnPalette = -1;
 		}
 	}
@@ -372,6 +391,7 @@ namespace prism {
 	static unsigned char* compressIndices(const unsigned char* tSource, int tSize, int* oCompressedSize) {
 		// At most one byte more for each 128 (literals all the way).
 		std::vector<unsigned char>& out = gIndexScratch;
+		reserveIndexScratch();
 		out.resize((size_t)tSize + tSize / 128 + 2);
 		unsigned char* o = out.data();
 		int i = 0;
@@ -414,6 +434,7 @@ namespace prism {
 
 	static const unsigned char* decompressIndices(const Texture tTexture, int tSize) {
 		std::vector<unsigned char>& out = gIndexScratch;
+		reserveIndexScratch();
 		out.resize(tSize);
 		const unsigned char* p = tTexture->mIndexed;
 		const unsigned char* end = p + tTexture->mIndexedSize;
