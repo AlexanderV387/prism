@@ -1568,6 +1568,12 @@ static void resetPCXBasePalette() {
 	gPCXSpriteGroup = -1;
 }
 
+#ifdef N3DS_HEAP_GUARD
+// [3DS] Not 0: the buffer is only the PCX's header and its palette (if
+// its own), the subfile being this long; the sprite is streamed.
+static uint32_t gN3DSPCXHeaderOnlyLength;
+#endif
+
 static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int mIsUsingOwnPalette, const Buffer& b, const Vector2D& tAxisOffset) {
 	PCXHeader header;
 
@@ -1587,15 +1593,25 @@ static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int
 	}
 
 	int encodedSize;
+	int paletteStart;
+#ifdef N3DS_HEAP_GUARD
+	const uint32_t subfileLength = gN3DSPCXHeaderOnlyLength ? gN3DSPCXHeaderOnlyLength : uint32_t(b.mLength);
+#else
+	const uint32_t subfileLength = uint32_t(b.mLength);
+#endif
 	if (mIsUsingOwnPalette) {
-		encodedSize = b.mLength - sizeof(PCXHeader) - 256 * 3;
+		encodedSize = subfileLength - sizeof(PCXHeader) - 256 * 3;
 	}
 	else {
-		encodedSize = b.mLength - sizeof(PCXHeader);
+		encodedSize = subfileLength - sizeof(PCXHeader);
 	}
+	paletteStart = encodedSize;
+#ifdef N3DS_HEAP_GUARD
+	if (gN3DSPCXHeaderOnlyLength) paletteStart = 0;   // right after the header
+#endif
 
 	if (mIsUsingOwnPalette) {
-		auto insertPalette = loadPCXPaletteToBuffer(p, encodedSize);
+		auto insertPalette = loadPCXPaletteToBuffer(p, paletteStart);
 		if (gPCXBasePalette.empty()) {
 			gPCXBasePalette.assign((const uint8_t*)insertPalette.mData, (const uint8_t*)insertPalette.mData + 256 * 3);
 		}
@@ -1616,7 +1632,7 @@ static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int
 	assert(!tDst->mPalettes.empty());
 
 #ifdef N3DS_HEAP_GUARD
-	if (!hasN3DSHeapRoomForSprite((size_t)pcxImageSize * 3)) {
+	if (gN3DSPCXHeaderOnlyLength || !hasN3DSHeapRoomForSprite((size_t)pcxImageSize * 3)) {
 #if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
 		if (getenv("N3DS_SIM_TRACE_LEFT_OUT")) fprintf(stderr, "n3dssim: streamed %d (%dx%d)\n", gPCXSpriteGroup, w, h);
 #endif
@@ -1624,7 +1640,7 @@ static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int
 		gN3DSSpritesLeftOut--;
 		const int isOnRealPalette = gIsOnPCXBasePalette && gPrismMugenSpriteFileReaderData.mIsUsingRealPalette;
 		const Buffer* palette = isOnRealPalette ? NULL : &(gIsOnPCXBasePalette ? tDst->mPalettes.front() : tDst->mPalettes.back()).mBuffer;
-		return makeN3DSStreamedSprite(N3DS_STREAM_PCX, gN3DSSubfileOffset, uint32_t(b.mLength), w, h, header.mBytesPerLine, palette, tAxisOffset);
+		return makeN3DSStreamedSprite(N3DS_STREAM_PCX, gN3DSSubfileOffset, subfileLength, w, h, header.mBytesPerLine, palette, tAxisOffset);
 	}
 #endif
 	Buffer encodedImageBuffer = makeBuffer(p, encodedSize);
@@ -1766,9 +1782,40 @@ static void loadSingleSFFFileAndInsertIntoSpriteFile(const SFFSubFileHeader& sub
 #ifdef N3DS_HEAP_GUARD
 		gN3DSSubfileOffset = gPrismMugenSpriteFileReaderData.mReader.mGetCurrentOffset(&gPrismMugenSpriteFileReaderData.mReader);
 #endif
-		Buffer pcxBuffer = gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, subHeader.mSubfileLength);
 		int isFirstImageWithActiveActFile = gPrismMugenSpriteFileReaderData.mHasPaletteFile && subHeader.mGroup == 0 && subHeader.mImage == 0; 
 		int isUsingOwnPalette = !subHeader.mHasSamePaletteAsPreviousImage && !isFirstImageWithActiveActFile;
+#ifdef N3DS_HEAP_GUARD
+		// A big one with no room in one piece for its file's data (New
+		// Kyouki against himself, the fourth time: 880 KB with the heap in
+		// pieces, the game's end): only its header and palette read, the
+		// rest streamed.
+		Buffer pcxBuffer;
+		const uint32_t length = uint32_t(subHeader.mSubfileLength);
+#if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+		static const int isForcedHeaderOnly = getenv("N3DS_SIM_PCX_HEADER_ONLY") ? 1 : 0;
+#else
+		static const int isForcedHeaderOnly = 0;
+#endif
+		if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && length > sizeof(PCXHeader) + 256 * 3
+			&& ((isForcedHeaderOnly && length >= 16 * 1024) || (length >= 256 * 1024
+			&& !hasN3DSHeapRoomInOnePiece(size_t(length) + 512 * 1024, 1) && (letN3DSStreamedPixelsGo(0), !hasN3DSHeapRoomInOnePiece(size_t(length) + 512 * 1024, 1))))) {
+			const int paletteSize = isUsingOwnPalette ? 256 * 3 : 0;
+			uint8_t* compact = (uint8_t*)allocMemory(sizeof(PCXHeader) + 256 * 3);
+			gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, compact, sizeof(PCXHeader));
+			if (paletteSize) {
+				gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, gN3DSSubfileOffset + length - paletteSize);
+				gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, compact + sizeof(PCXHeader), paletteSize);
+			}
+			gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, gN3DSSubfileOffset + length);
+			pcxBuffer = makeBufferOwned(compact, sizeof(PCXHeader) + paletteSize);
+			gN3DSPCXHeaderOnlyLength = length;
+		}
+		else {
+			pcxBuffer = gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, subHeader.mSubfileLength);
+		}
+#else
+		Buffer pcxBuffer = gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, subHeader.mSubfileLength);
+#endif
 		if (isFirstImageWithActiveActFile) gIsOnPCXBasePalette = 1;
 		// A portrait's palette (group 9000) is its own: the sprites after it
 		// sharing "the previous palette" are the character's, drawn with the
@@ -1780,6 +1827,9 @@ static void loadSingleSFFFileAndInsertIntoSpriteFile(const SFFSubFileHeader& sub
 		gPCXSpriteGroup = subHeader.mGroup;
 		texture = loadTextureFromPCXBuffer(tDst, isUsingOwnPalette, pcxBuffer, Vector2D(subHeader.mImageAxisXCoordinate, subHeader.mImageAxisYCoordinate));
 		freeBuffer(pcxBuffer);
+#ifdef N3DS_HEAP_GUARD
+		gN3DSPCXHeaderOnlyLength = 0;
+#endif
 	}
 	else {
 		texture = makeLinkedMugenSpriteFileSprite(subHeader.mIndexOfPreciousSpriteCopy, Vector2D(subHeader.mImageAxisXCoordinate, subHeader.mImageAxisYCoordinate));

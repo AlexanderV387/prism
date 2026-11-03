@@ -5,7 +5,8 @@
 #include "prism/system.h"
 
 // [3DS] The console's buttons as player 1's controller. Prism's A, B, X and
-// Y are the 3DS's A, B, X and Y; ZL and ZR also count as L and R. The
+// Y are the 3DS's A, B, X and Y (ZL and ZR are the game's own: a mark in
+// the log, a screenshot). The
 // Circle Pad moves as the D-pad. The touch screen is the mouse (the bottom
 // screen's 320x240 on the game's screen).
 
@@ -13,6 +14,7 @@ namespace prism {
 
 	static struct {
 		u32 mHeld;
+		u32 mDown;
 		circlePosition mCircle;
 		touchPosition mTouch;
 	} gPrismN3DSInputData;
@@ -21,8 +23,8 @@ namespace prism {
 	static int evaluateButtonB(int i) { return !i && (gPrismN3DSInputData.mHeld & KEY_B); }
 	static int evaluateButtonX(int i) { return !i && (gPrismN3DSInputData.mHeld & KEY_X); }
 	static int evaluateButtonY(int i) { return !i && (gPrismN3DSInputData.mHeld & KEY_Y); }
-	static int evaluateButtonL(int i) { return !i && (gPrismN3DSInputData.mHeld & (KEY_L | KEY_ZL)); }
-	static int evaluateButtonR(int i) { return !i && (gPrismN3DSInputData.mHeld & (KEY_R | KEY_ZR)); }
+	static int evaluateButtonL(int i) { return !i && (gPrismN3DSInputData.mHeld & KEY_L); }
+	static int evaluateButtonR(int i) { return !i && (gPrismN3DSInputData.mHeld & KEY_R); }
 	static int evaluateButtonLeft(int i) { return !i && (gPrismN3DSInputData.mHeld & KEY_LEFT); }
 	static int evaluateButtonRight(int i) { return !i && (gPrismN3DSInputData.mHeld & KEY_RIGHT); }
 	static int evaluateButtonUp(int i) { return !i && (gPrismN3DSInputData.mHeld & KEY_UP); }
@@ -61,9 +63,15 @@ namespace prism {
 		hidScanInput();
 		// (KEY_LEFT and the others are the D-pad's and the Circle Pad's.)
 		gPrismN3DSInputData.mHeld = hidKeysHeld();
+		gPrismN3DSInputData.mDown = hidKeysDown();
 		hidCircleRead(&gPrismN3DSInputData.mCircle);
 		if (gPrismN3DSInputData.mHeld & KEY_TOUCH) hidTouchRead(&gPrismN3DSInputData.mTouch);
 	}
+
+	// The console's buttons as they are (libctru's KEY_ flags): held, and
+	// pressed since the last frame.
+	uint32_t getN3DSKeysHeld() { return gPrismN3DSInputData.mHeld; }
+	uint32_t getN3DSKeysDown() { return gPrismN3DSInputData.mDown; }
 
 	static int pressed(int i, ControllerButtonPrism tButton) {
 		return gN3DSButtonMapping[gButtonMapping[i][tButton]](i);

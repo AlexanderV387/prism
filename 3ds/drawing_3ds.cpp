@@ -1,6 +1,7 @@
 #include "prism/drawing.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <math.h>
 #include <set>
@@ -761,4 +762,47 @@ namespace prism {
 		return gBookkeepingData.mRealFramerate;
 	}
 
+
+	// The top screen as shown (a frame or two before), as a 24-bit BMP; 0 if
+	// it could not be written.
+	int saveN3DSScreenshot(const char* tPath) {
+		u16 fbWidth = 0, fbHeight = 0;
+		const u8* fb = gfxGetFramebuffer(GFX_TOP, GFX_LEFT, &fbWidth, &fbHeight);
+		if (!fb || !fbWidth || !fbHeight) return 0;
+		const GSPGPU_FramebufferFormat format = gfxGetScreenFormat(GFX_TOP);
+		const int bytesPerPixel = format == GSP_RGBA8_OES ? 4 : (format == GSP_BGR8_OES ? 3 : 2);
+		const int width = fbHeight, height = fbWidth;   // stored turned: columns of 240
+		const int rowSize = (width * 3 + 3) & ~3;
+		FILE* file = fopen(tPath, "wb");
+		if (!file) return 0;
+		u8 header[54] = { 'B', 'M' };
+		const u32 dataSize = (u32)rowSize * height, fileSize = 54 + dataSize;
+		memcpy(header + 2, &fileSize, 4);
+		const u32 dataOffset = 54, infoSize = 40;
+		memcpy(header + 10, &dataOffset, 4);
+		memcpy(header + 14, &infoSize, 4);
+		const int32_t w32 = width, h32 = height;
+		memcpy(header + 18, &w32, 4);
+		memcpy(header + 22, &h32, 4);
+		const u16 planes = 1, bits = 24;
+		memcpy(header + 26, &planes, 2);
+		memcpy(header + 28, &bits, 2);
+		memcpy(header + 34, &dataSize, 4);
+		fwrite(header, 1, sizeof(header), file);
+		static u8 row[800 * 3 + 4];
+		for (int y = height - 1; y >= 0; y--) {   // BMP rows: bottom first
+			memset(row, 0, sizeof(row));
+			for (int x = 0; x < width && x < 800; x++) {
+				const u8* p = fb + ((size_t)x * fbWidth + (fbWidth - 1 - y)) * bytesPerPixel;
+				u8 r, g, b;
+				if (bytesPerPixel == 4) { r = p[3]; g = p[2]; b = p[1]; }
+				else if (bytesPerPixel == 3) { b = p[0]; g = p[1]; r = p[2]; }
+				else { const u16 c = (u16)(p[0] | (p[1] << 8)); r = (u8)((c >> 11) << 3); g = (u8)(((c >> 5) & 63) << 2); b = (u8)((c & 31) << 3); }
+				row[x * 3] = b; row[x * 3 + 1] = g; row[x * 3 + 2] = r;
+			}
+			fwrite(row, 1, rowSize, file);
+		}
+		fclose(file);
+		return 1;
+	}
 }
