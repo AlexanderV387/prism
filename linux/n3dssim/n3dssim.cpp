@@ -298,7 +298,7 @@ namespace prism {
 
 	void waitForScreen() {}
 	void startDrawing() { gSim.mFrames++; advanceN3DSTextureFrame(); }
-	void stopDrawing() {}
+	void stopDrawing() { issueN3DSTextureReadAhead(); }
 	void waitForRendering() {}
 
 	bool isSkippingDrawing() { return false; }

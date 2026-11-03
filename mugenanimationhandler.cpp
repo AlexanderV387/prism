@@ -1278,6 +1278,19 @@ static void drawSingleAnimationDebugCollisionHitboxes(MugenAnimationHandlerEleme
 
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 int isN3DSTextureDrawable(const TextureData& tTexture);
+void askN3DSTextureReadAhead(const TextureData& tTexture);
+
+// [3DS] The animation's next step, if read from the card when drawn: asked
+// to be read ahead (an animation of big streamed sprites, New Kyouki's
+// 214-step full-screen one, showed few of its steps).
+static void readMugenAnimationNextStepAhead(MugenAnimationHandlerElement* e) {
+	if (!e->mAnimation || !e->mSprites) return;
+	MugenAnimationStep* next = getNextAnimationStep(e);
+	if (!next) return;
+	MugenSpriteFileSprite* sprite = getMugenSpriteFileTextureReference(e->mSprites, next->mGroupNumber, next->mSpriteNumber);
+	if (!sprite || sprite == e->mSprite) return;
+	for (auto& texture : sprite->mTextures) askN3DSTextureReadAhead(texture.mTexture);
+}
 
 static int isMugenSpriteDrawableNow(MugenSpriteFileSprite* tSprite) {
 	for (auto& texture : tSprite->mTextures) {
@@ -1428,6 +1441,9 @@ static void drawSingleMugenAnimation(void* tCaller, MugenAnimationHandlerElement
 		drawSingleMugenAnimationSprite(texture, caller);
 	}
 	e->mSprite = currentSprite;
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+	readMugenAnimationNextStepAhead(e);
+#endif
 }
 
 static void drawMugenAnimationHandler(void* tData) {

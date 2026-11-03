@@ -61,6 +61,9 @@ void setScreenFramerate(int tFramerate);
 // game's coordinates; otherwise black sides (0).
 void setN3DSScreenFullWidth(int tIsFullWidth);
 int isN3DSScreenFullWidth();
+// Stretched: the game's screen over the whole top screen (no sides).
+void setN3DSScreenStretched(int tIsStretched);
+int isN3DSScreenStretched();
 float getN3DSScreenSideMargin();
 #endif
 

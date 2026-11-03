@@ -123,9 +123,20 @@ namespace prism {
 	// ==========================================================================
 
 	static int gIsFullWidth = 1;
+	// Stretched (the default): the game's 4:3 screen over the whole top
+	// screen, a little wider, as on the PC its full-screen images cover it
+	// all (New Kyouki's 320x240 effects left the sides uncovered); else the
+	// game at its shape, more of the stage seen at the sides.
+	static int gIsStretched = 1;
 
+	static void updateScreenTransform();
 	void setN3DSScreenFullWidth(int tIsFullWidth) { gIsFullWidth = tIsFullWidth; }
 	int isN3DSScreenFullWidth() { return gIsFullWidth; }
+	void setN3DSScreenStretched(int tIsStretched) {
+		gIsStretched = tIsStretched;
+		updateScreenTransform();
+	}
+	int isN3DSScreenStretched() { return gIsStretched; }
 
 	float getN3DSScreenSideMargin() {
 		if (!gIsFullWidth) return 0;
@@ -135,7 +146,8 @@ namespace prism {
 	static void updateScreenTransform() {
 		const ScreenSize sz = getScreenSize();
 		const float scale = fminf(400 / (float)sz.x, TOP_HEIGHT / (float)sz.y);
-		const float scaleX = scale * TOP_WIDTH / 400;
+		float scaleX = scale * TOP_WIDTH / 400;
+		if (gIsStretched) scaleX = TOP_WIDTH / (float)sz.x;
 		gN3DSDrawingData.mScreenScale = Vector3D(scaleX, scale, 1);
 		gN3DSDrawingData.mScreenOffset = Vector3D(floorf((TOP_WIDTH - sz.x * scaleX) / 2), floorf((TOP_HEIGHT - sz.y * scale) / 2), 0);
 	}
@@ -515,6 +527,7 @@ namespace prism {
 		}
 		flushBatch();
 		gDrawList.clear();
+		issueN3DSTextureReadAhead();
 
 		GSPGPU_FlushDataCache(gN3DSDrawingData.mVertices, gN3DSDrawingData.mVertexAmount * sizeof(Vertex));
 		const uint64_t drawTicks = getN3DSPerfTicks() - gFrameDrawStart;

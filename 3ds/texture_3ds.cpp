@@ -209,6 +209,27 @@ namespace prism {
 
 	unsigned int getN3DSTextureFrame() { return gN3DSTextureFrame; }
 
+	// An animation's next step read ahead: one a frame, the biggest asked
+	// for, asked of the other core once the frame is drawn (the sprites shown
+	// now come first).
+	static N3DSTextureStream* gReadAheadCandidate;
+
+	void askN3DSTextureReadAhead(const TextureData& tTexture) {
+		if (!tTexture.mHasPalette || !tTexture.mTexture) return;
+		Texture texture = (Texture)tTexture.mTexture->mData;
+		if (!texture->mStream || texture->mIndexed || texture->mIsInitialized || !texture->mStream->mReadAhead) return;
+		if (gReadAheadCandidate && gReadAheadCandidate->mImageSize >= texture->mStream->mImageSize) return;
+		gReadAheadCandidate = texture->mStream;
+	}
+
+	void issueN3DSTextureReadAhead() {
+		N3DSTextureStream* stream = gReadAheadCandidate;
+		gReadAheadCandidate = NULL;
+		if (stream) stream->mReadAhead(stream);
+	}
+
+	void forgetN3DSTextureReadAhead() { gReadAheadCandidate = NULL; }
+
 	void advanceN3DSTextureFrame() {
 		gN3DSTextureFrame++;
 		gN3DSStreamSyncTicksThisFrame = 0;
@@ -344,6 +365,7 @@ namespace prism {
 	int gN3DSStreamsForceSync;
 
 	void forgetN3DSTexture(N3DSTextureData* tTexture) {
+		if (tTexture->mStream && gReadAheadCandidate == tTexture->mStream) gReadAheadCandidate = NULL;
 		if (gAllStreamed.erase(tTexture) && gAllStreamed.empty() && gAllStreamed.bucket_count() > 16) {
 			std::unordered_map<Texture, std::pair<int, int>>().swap(gAllStreamed);   // its table let go too
 		}

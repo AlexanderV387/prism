@@ -28,6 +28,8 @@ typedef struct N3DSTextureStream {
 	// the other core: asked again the next frames).
 	int (*mLoad)(struct N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight);
 	void (*mFree)(struct N3DSTextureStream* tStream);
+	// Asks for it to be read ahead (on the other core), if it is not at hand.
+	void (*mReadAhead)(struct N3DSTextureStream* tStream);
 	uint32_t mImageSize;   // its whole sprite's pixels: the biggest are kept first
 	uint32_t mImageKey;    // its sprite (the pieces of one together)
 } N3DSTextureStream;

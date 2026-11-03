@@ -968,6 +968,47 @@ static struct {
 	std::vector<uint8_t> mImage;
 } gN3DSStreamCache;
 
+// The ones read before it (or read ahead of an animation's next step),
+// kept a little while: two big animations at once each found the other's
+// in its place, and a sprite read ahead was gone before it was shown.
+typedef struct {
+	const std::string* mPath;
+	uint32_t mOffset;
+	std::vector<uint8_t> mImage;
+} N3DSStreamCacheEntry;
+static std::vector<N3DSStreamCacheEntry> gN3DSStreamCacheOlder;
+static const size_t N3DS_STREAM_CACHE_OLDER_BUDGET = 640 * 1024;
+static const size_t N3DS_STREAM_CACHE_OLDER_AMOUNT = 4;
+
+static size_t getN3DSStreamCacheOlderBytes() {
+	size_t bytes = 0;
+	for (const auto& entry : gN3DSStreamCacheOlder) bytes += entry.mImage.capacity();
+	return bytes;
+}
+
+// The one at hand goes with the older ones (the oldest let go past the
+// budget), before another takes its place.
+static void stashN3DSStreamCache() {
+	if (gN3DSStreamCache.mImage.empty() || !gN3DSStreamCache.mPath) return;
+	if (gN3DSStreamCache.mImage.capacity() > N3DS_STREAM_CACHE_OLDER_BUDGET) return;
+	N3DSStreamCacheEntry entry;
+	entry.mPath = gN3DSStreamCache.mPath;
+	entry.mOffset = gN3DSStreamCache.mOffset;
+	entry.mImage.swap(gN3DSStreamCache.mImage);
+	gN3DSStreamCache.mPath = NULL;
+	gN3DSStreamCacheOlder.push_back(std::move(entry));
+	while (!gN3DSStreamCacheOlder.empty() && (gN3DSStreamCacheOlder.size() > N3DS_STREAM_CACHE_OLDER_AMOUNT || getN3DSStreamCacheOlderBytes() > N3DS_STREAM_CACHE_OLDER_BUDGET)) {
+		gN3DSStreamCacheOlder.erase(gN3DSStreamCacheOlder.begin());
+	}
+}
+
+static int findN3DSStreamCacheOlder(const std::string* tPath, uint32_t tOffset) {
+	for (size_t i = 0; i < gN3DSStreamCacheOlder.size(); i++) {
+		if (gN3DSStreamCacheOlder[i].mPath == tPath && gN3DSStreamCacheOlder[i].mOffset == tOffset) return int(i);
+	}
+	return -1;
+}
+
 static int gIsLoadingN3DSStream;   // its data in use: not let go meanwhile
 static uint32_t gN3DSLiveStreams;  // the streamed textures there are
 
@@ -976,9 +1017,10 @@ static void dropN3DSStreamWorkerResult();
 static size_t letN3DSStreamCacheGo() {
 	if (gIsLoadingN3DSStream) return 0;
 	dropN3DSStreamWorkerResult();
-	const size_t freed = gN3DSStreamData.capacity() + gN3DSStreamCache.mImage.capacity();
+	const size_t freed = gN3DSStreamData.capacity() + gN3DSStreamCache.mImage.capacity() + getN3DSStreamCacheOlderBytes();
 	std::vector<uint8_t>().swap(gN3DSStreamCache.mImage);
 	gN3DSStreamCache.mPath = NULL;
+	std::vector<N3DSStreamCacheEntry>().swap(gN3DSStreamCacheOlder);
 	std::vector<uint8_t>().swap(gN3DSStreamData);
 	return freed;
 }
@@ -1267,7 +1309,18 @@ static const uint32_t N3DS_STREAM_SMALL_LENGTH = 64 * 1024;
 static const double N3DS_STREAM_SYNC_MS_A_FRAME = 8.0;
 
 static int isN3DSStreamCached(const N3DSSpriteStream* e) {
-	return !gN3DSStreamCache.mImage.empty() && gN3DSStreamCache.mPath == e->mPath && gN3DSStreamCache.mOffset == e->mOffset;
+	if (!gN3DSStreamCache.mImage.empty() && gN3DSStreamCache.mPath == e->mPath && gN3DSStreamCache.mOffset == e->mOffset) return 1;
+	// One of the older ones: made the one at hand (its pieces come next).
+	const int older = findN3DSStreamCacheOlder(e->mPath, e->mOffset);
+	if (older < 0 || gIsLoadingN3DSStream) return 0;
+	N3DSStreamCacheEntry found;
+	found.mImage.swap(gN3DSStreamCacheOlder[older].mImage);
+	gN3DSStreamCacheOlder.erase(gN3DSStreamCacheOlder.begin() + older);
+	stashN3DSStreamCache();
+	gN3DSStreamCache.mImage.swap(found.mImage);
+	gN3DSStreamCache.mPath = e->mPath;
+	gN3DSStreamCache.mOffset = e->mOffset;
+	return 1;
 }
 
 // tIndices NULL: only whether the sprite is there now (read at once when it
@@ -1286,6 +1339,7 @@ static int loadN3DSSpriteStreamTried(N3DSSpriteStream* e, unsigned char* oIndice
 			const int isThisOne = gN3DSWorker.mRequest.mPath == e->mPath && gN3DSWorker.mRequest.mOffset == e->mOffset;
 			if (gN3DSWorker.mIsResultValid && !gIsLoadingN3DSStream) {
 				// Kept as the last one read, whichever it is: its pieces come next.
+				stashN3DSStreamCache();
 				gN3DSStreamCache.mImage.swap(gN3DSWorker.mResult);
 				gN3DSStreamCache.mPath = gN3DSWorker.mRequest.mPath;
 				gN3DSStreamCache.mOffset = gN3DSWorker.mRequest.mOffset;
@@ -1358,6 +1412,24 @@ static int loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oIndi
 	return ret;
 }
 
+// Asked of the other core when it is idle and the sprite is not at hand:
+// read while the animation still shows the step before (never read here).
+static void readN3DSSpriteStreamAhead(N3DSTextureStream* tStream) {
+	N3DSSpriteStream* e = (N3DSSpriteStream*)tStream;
+	if (!gN3DSWorker.mIsAvailable || !isN3DSStreamKindOnWorker(e->mKind) || gN3DSStreamsForceSync) return;
+	if (gN3DSStreamCache.mPath == e->mPath && gN3DSStreamCache.mOffset == e->mOffset && !gN3DSStreamCache.mImage.empty()) return;
+	if (findN3DSStreamCacheOlder(e->mPath, e->mOffset) >= 0) return;
+	if (e->mFailedFrame) return;
+	const size_t need = size_t(e->mBytesPerLine) * e->mHeight * 2 + e->mLength + 1024 * 1024;
+	if (getN3DSHeapFree() < need) return;
+	std::unique_lock<std::mutex> lock(gN3DSWorker.mMutex);
+	if (gN3DSWorker.mState != N3DS_WORKER_IDLE) return;
+	gN3DSWorker.mRequest = { e->mPath, e->mOffset, e->mLength, e->mKind, e->mBytesPerLine, e->mHeight };
+	gN3DSWorker.mState = N3DS_WORKER_ASKED;
+	lock.unlock();
+	gN3DSWorker.mCondition.notify_one();
+}
+
 static void copyN3DSStreamPiece(const N3DSSpriteStream* e, const Buffer& tImage, unsigned char* oIndices, int tWidth, int tHeight) {
 	// The piece, as getSingleAllocatedBufferFromSource cuts it.
 	const uint8_t* source = (const uint8_t*)tImage.mData;
@@ -1410,6 +1482,7 @@ static int loadN3DSSpriteStreamUnguarded(N3DSSpriteStream* e) {
 	if (e->mKind == N3DS_STREAM_LZ5 && e->mLength >= 4) {
 		uint32_t decompressedSize;
 		memcpy(&decompressedSize, data, 4);
+		stashN3DSStreamCache();
 		std::vector<uint8_t>().swap(gN3DSStreamCache.mImage);
 		gN3DSStreamCache.mPath = NULL;
 		try {
@@ -1458,6 +1531,7 @@ static int loadN3DSSpriteStreamUnguarded(N3DSSpriteStream* e) {
 	int isKept = 0;
 	if (image.mData) {
 		try {
+			stashN3DSStreamCache();
 			gN3DSStreamCache.mImage.assign((const uint8_t*)image.mData, (const uint8_t*)image.mData + image.mLength);
 			gN3DSStreamCache.mPath = e->mPath;
 			gN3DSStreamCache.mOffset = e->mOffset;
@@ -1529,6 +1603,7 @@ static MugenSpriteFileSprite makeN3DSStreamedSprite(int tKind, uint32_t tOffset,
 			gN3DSLiveStreams++;
 			stream->mBase.mLoad = loadN3DSSpriteStream;
 			stream->mBase.mFree = freeN3DSSpriteStream;
+			stream->mBase.mReadAhead = readN3DSSpriteStreamAhead;
 			stream->mBase.mImageSize = uint32_t(tBytesPerLine) * tHeight;
 			stream->mBase.mImageKey = tOffset;
 			stream->mPath = gN3DSStreamPath;

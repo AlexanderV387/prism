@@ -23,6 +23,8 @@ namespace prism {
 	void prepareN3DSTexture(const TextureData& tTexture);
 	int isN3DSTextureDrawable(const TextureData& tTexture);
 	unsigned int getN3DSTextureFrame();
+	void askN3DSTextureReadAhead(const TextureData& tTexture);
+	void issueN3DSTextureReadAhead();
 
 	// A paletted texture with its own palette (RGBA8 colors, a sprite's own
 	// in its SFF): kept and made again as prism's paletted ones, at half the
