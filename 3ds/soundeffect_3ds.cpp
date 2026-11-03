@@ -63,8 +63,9 @@ namespace prism {
 	void setSoundEffectCompression(int /*tIsEnabled*/) {}
 
 	// ==========================================================================
-	// WAV (PCM, 8 or 16 bits, mono or stereo), kept as it is: 8-bit sounds
-	// stay 8-bit (a boss's theme song as a sound: 10 MB, not 21).
+	// WAV (PCM, 8 or 16 bits, mono or stereo), kept as it is when there is
+	// room: 8-bit sounds stay 8-bit (a boss's theme song as a sound: 10 MB,
+	// not 21).
 
 	static u32 readU32(const u8* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((u32)p[3] << 24); }
 	static u16 readU16(const u8* p) { return (u16)(p[0] | (p[1] << 8)); }
@@ -108,25 +109,134 @@ namespace prism {
 		return 1;
 	}
 
-	static int addSoundEffect(void* tData, const WAVInfo& tInfo) {
-		const int bytesPerSample = tInfo.mBits / 8;
-		const u32 sampleAmount = tInfo.mDataLength / bytesPerSample / tInfo.mChannels;
-		// The DSP's 8-bit samples are signed, WAV's are not.
-		if (bytesPerSample == 1) {
-			u8* samples = (u8*)tData;
-			for (u32 i = 0; i < sampleAmount * tInfo.mChannels; i++) samples[i] ^= 0x80;
-		}
-		DSP_FlushDataCache(tData, sampleAmount * tInfo.mChannels * bytesPerSample);
+	// Linear memory kept for the sprites' textures: a character's sounds
+	// (Modern Kitana's .snd is 54 MB) took all of it, the fighters drawn
+	// with none. A sound that does not fit beside it is kept smaller: 8-bit,
+	// then mono, then at half the rate (each halves it); left out if not.
+	static const size_t SOUND_TEXTURE_RESERVE = 24 * 1024 * 1024;
 
+	typedef struct {
+		int mOutBytes;      // 1 or 2
+		int mOutChannels;   // 1 or 2
+		int mStep;          // 1 or 2 (half the rate)
+	} SoundShape;
+
+	static size_t getShapedSize(u32 tFrames, const SoundShape& tShape) {
+		return size_t((tFrames + tShape.mStep - 1) / tShape.mStep) * tShape.mOutChannels * tShape.mOutBytes;
+	}
+
+	// A sound file's part of the linear memory left beside the reserve (the
+	// first fighter's half, the second's all of what is left).
+	static float gN3DSSoundFileShare = 1.0f;
+	static size_t gN3DSSoundFileBudget = (size_t)-1;   // left for this file
+
+	void setN3DSSoundFileShare(float tShare) { gN3DSSoundFileShare = tShare; }
+
+	void startN3DSSoundFile() {
+		const size_t freeLinear = linearSpaceFree();
+		const size_t forSounds = freeLinear > SOUND_TEXTURE_RESERVE ? freeLinear - SOUND_TEXTURE_RESERVE : 0;
+		gN3DSSoundFileBudget = size_t(forSounds * gN3DSSoundFileShare);
+	}
+
+	void endN3DSSoundFile() {
+		gN3DSSoundFileBudget = (size_t)-1;
+		gN3DSSoundFileShare = 1.0f;
+	}
+
+	// The shape a sound of tFrames is kept in, 0 if none fits.
+	static int chooseSoundShape(const WAVInfo& tInfo, u32 tFrames, SoundShape* oShape) {
+		*oShape = { tInfo.mBits / 8, tInfo.mChannels, 1 };
+		const size_t freeLinear = linearSpaceFree();
+		for (int tries = 0; tries < 4; tries++) {
+			const size_t size = getShapedSize(tFrames, *oShape);
+			if (size + SOUND_TEXTURE_RESERVE <= freeLinear && size <= gN3DSSoundFileBudget) return 1;
+			if (oShape->mOutBytes == 2) oShape->mOutBytes = 1;
+			else if (oShape->mOutChannels == 2) oShape->mOutChannels = 1;
+			else if (oShape->mStep == 1 && tInfo.mRate >= 16000) oShape->mStep = 2;
+			else break;
+		}
+		return 0;
+	}
+
+	// Samples from the WAV's bytes to the shape kept: the DSP's 8-bit
+	// samples are signed, WAV's are not.
+	typedef struct {
+		const WAVInfo* mInfo;
+		SoundShape mShape;
+		u8* mDst;
+		u32 mFrame;          // input frames seen
+		u8 mPartial[4];      // an input frame cut between two chunks
+		int mPartialLength;
+	} SoundConverter;
+
+	static int readInputSample(const u8* p, int tBits) {
+		return tBits == 8 ? (int(p[0]) - 128) << 8 : int(s16(p[0] | (p[1] << 8)));
+	}
+
+	static void convertFrame(SoundConverter* c, const u8* tFrame) {
+		const int inBytes = c->mInfo->mBits / 8;
+		if (c->mFrame++ % c->mShape.mStep) return;
+		int values[2];
+		values[0] = readInputSample(tFrame, c->mInfo->mBits);
+		values[1] = c->mInfo->mChannels == 2 ? readInputSample(tFrame + inBytes, c->mInfo->mBits) : values[0];
+		if (c->mShape.mOutChannels == 1 && c->mInfo->mChannels == 2) values[0] = (values[0] + values[1]) / 2;
+		for (int ch = 0; ch < c->mShape.mOutChannels; ch++) {
+			if (c->mShape.mOutBytes == 1) *c->mDst++ = u8(s8(values[ch] >> 8));
+			else {
+				const s16 v = s16(values[ch]);
+				memcpy(c->mDst, &v, 2);
+				c->mDst += 2;
+			}
+		}
+	}
+
+	static void convertBytes(SoundConverter* c, const u8* tSrc, size_t tLength) {
+		const int frameBytes = c->mInfo->mBits / 8 * c->mInfo->mChannels;
+		while (tLength && c->mPartialLength) {
+			c->mPartial[c->mPartialLength++] = *tSrc++;
+			tLength--;
+			if (c->mPartialLength == frameBytes) {
+				convertFrame(c, c->mPartial);
+				c->mPartialLength = 0;
+			}
+		}
+		for (; tLength >= (size_t)frameBytes; tLength -= frameBytes, tSrc += frameBytes) convertFrame(c, tSrc);
+		while (tLength--) c->mPartial[c->mPartialLength++] = *tSrc++;
+	}
+
+	static int addSoundEffect(void* tData, u32 tFrames, const WAVInfo& tInfo, const SoundShape& tShape) {
+		DSP_FlushDataCache(tData, getShapedSize(tFrames, tShape));
 		N3DSSoundEffect e;
 		e.mData = tData;
-		e.mSampleAmount = sampleAmount;
-		e.mChannelAmount = tInfo.mChannels;
-		e.mBytesPerSample = bytesPerSample;
-		e.mRate = tInfo.mRate;
+		e.mSampleAmount = (tFrames + tShape.mStep - 1) / tShape.mStep;
+		e.mChannelAmount = tShape.mOutChannels;
+		e.mBytesPerSample = tShape.mOutBytes;
+		e.mRate = tInfo.mRate / tShape.mStep;
 		const int id = gN3DSSoundEffectData.mNextID++;
 		gN3DSSoundEffectData.mSoundEffects[id] = e;
 		return id;
+	}
+
+	static int gN3DSSoundsShrunk, gN3DSSoundsLeftOut;
+
+	// Room for a sound of tFrames: its shape and memory, NULL if none.
+	static u8* allocateSound(const WAVInfo& tInfo, u32 tFrames, SoundShape* oShape) {
+		if (!chooseSoundShape(tInfo, tFrames, oShape)) {
+			if (!gN3DSSoundsLeftOut++) {
+				logWarning("Out of linear memory for a sound: left out (a character's sounds keep 24 MB for the sprites).");
+			}
+			return NULL;
+		}
+		if (oShape->mOutBytes * 8 != tInfo.mBits || oShape->mOutChannels != tInfo.mChannels || oShape->mStep != 1) gN3DSSoundsShrunk++;
+		const size_t size = getShapedSize(tFrames, *oShape);
+		u8* samples = (u8*)linearAlloc(size);
+		if (!samples) {
+			logWarning("Out of linear memory for a sound.");
+		}
+		else if (gN3DSSoundFileBudget != (size_t)-1) {
+			gN3DSSoundFileBudget -= std::min(size, gN3DSSoundFileBudget);
+		}
+		return samples;
 	}
 
 	static int loadSoundEffectFromBufferUncounted(const Buffer& tBuffer) {
@@ -136,16 +246,14 @@ namespace prism {
 			return -1;
 		}
 		if (!isSupportedWAV(info)) return -1;
-		const u32 length = info.mDataLength - info.mDataLength % (info.mBits / 8 * info.mChannels);
-		if (!length) return -1;
-		info.mDataLength = length;
-		void* samples = linearAlloc(length);
-		if (!samples) {
-			logWarning("Out of linear memory for a sound.");
-			return -1;
-		}
-		memcpy(samples, (const u8*)tBuffer.mData + info.mDataStart, length);
-		return addSoundEffect(samples, info);
+		const u32 frames = info.mDataLength / (info.mBits / 8 * info.mChannels);
+		if (!frames) return -1;
+		SoundShape shape;
+		u8* samples = allocateSound(info, frames, &shape);
+		if (!samples) return -1;
+		SoundConverter c = { &info, shape, samples, 0, {0}, 0 };
+		convertBytes(&c, (const u8*)tBuffer.mData + info.mDataStart, size_t(frames) * (info.mBits / 8 * info.mChannels));
+		return addSoundEffect(samples, frames, info, shape);
 	}
 
 	int loadSoundEffectFromBuffer(const Buffer& tBuffer) {
@@ -156,9 +264,10 @@ namespace prism {
 		return ret;
 	}
 
-	// A WAV of tLength bytes read by tRead straight into linear memory (a big
-	// one in the heap first did not fit there next to a boss's sprites); -2
-	// if its header is longer than the start read (then read it whole).
+	// A WAV of tLength bytes read by tRead in pieces straight into linear
+	// memory (a big one in the heap first did not fit there next to a
+	// boss's sprites); -2 if its header is longer than the start read (then
+	// read it whole).
 	int loadN3DSSoundEffectFromReader(void (*tRead)(void* tCaller, void* tDst, uint32_t tSize), void* tCaller, uint32_t tLength) {
 		const uint64_t startTicks = getN3DSPerfTicks();
 		u8 header[1024];
@@ -173,22 +282,31 @@ namespace prism {
 			return -2;
 		}
 		if (!isSupportedWAV(info)) return -1;
-		const u32 length = info.mDataLength - info.mDataLength % (info.mBits / 8 * info.mChannels);
-		if (!length) return -1;
-		info.mDataLength = length;
-		u8* samples = (u8*)linearAlloc(length);
-		if (!samples) {
-			logWarning("Out of linear memory for a sound.");
-			return -1;
+		const u32 frames = info.mDataLength / (info.mBits / 8 * info.mChannels);
+		if (!frames) return -1;
+		SoundShape shape;
+		u8* samples = allocateSound(info, frames, &shape);
+		if (!samples) return -1;
+		SoundConverter c = { &info, shape, samples, 0, {0}, 0 };
+		size_t left = size_t(frames) * (info.mBits / 8 * info.mChannels);
+		const size_t inHeader = std::min<size_t>(left, headerLength - info.mDataStart);
+		convertBytes(&c, header + info.mDataStart, inHeader);
+		left -= inHeader;
+		static u8 chunk[16 * 1024];
+		while (left) {
+			const uint32_t amount = (uint32_t)std::min<size_t>(left, sizeof(chunk));
+			tRead(tCaller, chunk, amount);
+			convertBytes(&c, chunk, amount);
+			left -= amount;
 		}
-		const u32 inHeader = (u32)std::min<size_t>(length, headerLength - info.mDataStart);
-		memcpy(samples, header + info.mDataStart, inHeader);
-		if (length > inHeader) tRead(tCaller, samples + inHeader, length - inHeader);
-		const int ret = addSoundEffect(samples, info);
+		const int ret = addSoundEffect(samples, frames, info, shape);
 		gN3DSPerf.mSoundTicks += getN3DSPerfTicks() - startTicks;
 		gN3DSPerf.mSounds++;
 		return ret;
 	}
+
+	int getN3DSSoundsShrunk() { return gN3DSSoundsShrunk; }
+	int getN3DSSoundsLeftOut() { return gN3DSSoundsLeftOut; }
 
 	int loadSoundEffect(const char* tPath) {
 		Buffer b = fileToBuffer(tPath);

@@ -38,6 +38,14 @@ namespace prism {
 	// A sound read by tRead straight into linear memory (soundeffect_3ds.cpp);
 	// its ID, -1 if it could not be, -2 if it has to be read whole first.
 	int loadN3DSSoundEffectFromReader(void (*tRead)(void* tCaller, void* tDst, uint32_t tSize), void* tCaller, uint32_t tLength);
+	// The sounds kept smaller, and left out, for want of linear memory.
+	int getN3DSSoundsShrunk();
+	// A .snd's part of the linear memory left for sounds (the next one
+	// loaded; back to all of it after), and its start and end.
+	void setN3DSSoundFileShare(float tShare);
+	void startN3DSSoundFile();
+	void endN3DSSoundFile();
+	int getN3DSSoundsLeftOut();
 
 	// A streamed paletted texture: no pixels kept, read through tStream
 	// when drawn (its palette prism's tPaletteID, or tRGBAPalette when not

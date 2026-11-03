@@ -11,6 +11,7 @@
 #include <prism/profiling.h>
 #ifdef __3DS__
 #include "3ds/prism3ds.h"
+#include "3ds/prism3dsperf.h"
 #endif
 
 namespace prism {
@@ -80,9 +81,12 @@ namespace prism {
 
 		int_map_push_owned(&group->mSamples, subHeader.mSampleNumber, e);
 
+#ifndef __3DS__
 		if (e->mSoundEffectID == -1) {
 			return 1;
 		}
+#endif
+		// [3DS] One left out (no room, or not a WAV) does not end the others.
 
 		if (subHeader.mNextFileOffset != 0) {
 			gMugenSoundFileReaderData.mFileReader.mSeek(&gMugenSoundFileReaderData.mFileReader, subHeader.mNextFileOffset);
@@ -117,7 +121,17 @@ namespace prism {
 	{
 		initMugenSoundFileReader();
 		gMugenSoundFileReaderData.mFileReader.mInit(&gMugenSoundFileReaderData.mFileReader, tPath);
+#ifdef __3DS__
+		const int shrunkBefore = getN3DSSoundsShrunk(), leftOutBefore = getN3DSSoundsLeftOut();
+		const uint32_t linearBefore = linearSpaceFree();
+		startN3DSSoundFile();
+#endif
 		MugenSounds ret = loadMugenSoundFileWithReader();
+#ifdef __3DS__
+		endN3DSSoundFile();
+		addN3DSPerfLine("  sounds %s: %u KB of linear memory, %d kept smaller (8-bit, mono or half the rate), %d left out", tPath,
+			(unsigned)((linearBefore - linearSpaceFree()) / 1024), getN3DSSoundsShrunk() - shrunkBefore, getN3DSSoundsLeftOut() - leftOutBefore);
+#endif
 		gMugenSoundFileReaderData.mFileReader.mDelete(&gMugenSoundFileReaderData.mFileReader);
 
 		return ret;
