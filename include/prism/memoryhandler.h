@@ -28,6 +28,8 @@ typedef struct N3DSTextureStream {
 	// the other core: asked again the next frames).
 	int (*mLoad)(struct N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight);
 	void (*mFree)(struct N3DSTextureStream* tStream);
+	uint32_t mImageSize;   // its whole sprite's pixels: the biggest are kept first
+	uint32_t mImageKey;    // its sprite (the pieces of one together)
 } N3DSTextureStream;
 
 typedef struct {
@@ -35,6 +37,7 @@ typedef struct {
 	int mIsInitialized;
 	unsigned char* mIndexed;
 	int mIndexedSize;
+	int mIsPinned;     // a streamed one whose pixels are kept for good (read at load)
 	int mOwnPalette;   // its own palette (texture_3ds.cpp's table), or -1: prism's
 	int mPaletteVersion;
 	unsigned int mLastUsedFrame;

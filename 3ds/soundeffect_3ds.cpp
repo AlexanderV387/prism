@@ -111,9 +111,10 @@ namespace prism {
 
 	// Linear memory kept for the sprites' textures: a character's sounds
 	// (Modern Kitana's .snd is 54 MB) took all of it, the fighters drawn
-	// with none. A sound that does not fit beside it is kept smaller: 8-bit,
-	// then mono, then at half the rate (each halves it); left out if not.
-	static const size_t SOUND_TEXTURE_RESERVE = 24 * 1024 * 1024;
+	// with none; with 24 MB her textures (32 MB) were made again and again.
+	// A sound that does not fit beside it is kept smaller: 8-bit, then
+	// mono, then at half the rate (each halves it); left out if not.
+	static const size_t SOUND_TEXTURE_RESERVE = 44 * 1024 * 1024;
 
 	typedef struct {
 		int mOutBytes;      // 1 or 2
@@ -239,7 +240,7 @@ namespace prism {
 	static u8* allocateSound(const WAVInfo& tInfo, u32 tFrames, SoundShape* oShape) {
 		if (!chooseSoundShape(tInfo, tFrames, oShape)) {
 			if (!gN3DSSoundsLeftOut++) {
-				logWarning("Out of linear memory for a sound: left out (a character's sounds keep 24 MB for the sprites).");
+				logWarning("Out of linear memory for a sound: left out (sounds keep 44 MB for the sprites).");
 			}
 			return NULL;
 		}

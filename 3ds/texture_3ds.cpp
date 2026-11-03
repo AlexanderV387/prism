@@ -297,8 +297,13 @@ namespace prism {
 		return __ctru_heap_size > used ? __ctru_heap_size - used : 0;
 	}
 
+	// Every streamed texture there is, with its size (to keep some for good).
+	static std::unordered_map<Texture, std::pair<int, int>> gAllStreamed;
+	int gN3DSStreamsForceSync;
+
 	void forgetN3DSTexture(N3DSTextureData* tTexture) {
-		if (tTexture->mStream && tTexture->mIndexed) letStreamedPixelsGo(tTexture);
+		gAllStreamed.erase(tTexture);
+		if (tTexture->mStream && tTexture->mIndexed && !tTexture->mIsPinned) letStreamedPixelsGo(tTexture);
 		if (gStreamedInUse == tTexture) gStreamedInUse = NULL;
 		gResidentTextures.erase(tTexture);
 		if (tTexture->mOwnPalette >= 0 && tTexture->mOwnPalette < (int)gOwnPalettes.size()) {
@@ -448,6 +453,7 @@ namespace prism {
 		ret.mTexture = allocTextureMemory(sizeof(N3DSTextureData));
 		Texture texture = (Texture)ret.mTexture->mData;
 		texture->mStream = tStream;
+		gAllStreamed[texture] = std::make_pair(tWidth, tHeight);
 		if (tRGBAPalette) {
 			u16 colors[256];
 			for (int i = 0; i < 256; i++) colors[i] = toRGBA5551(tRGBAPalette[i]);
@@ -499,6 +505,46 @@ namespace prism {
 		gN3DSPerf.mStreamed++;
 		gN3DSPerf.mStreamedTicks += getN3DSPerfTicks() - start;
 		return 1;
+	}
+
+	// Streamed textures read now and kept for good while the heap has more
+	// than tKeepFree left: the biggest sprites first (a full-screen X-ray
+	// image read mid-fight took two frames each, shown in flashes). Read on
+	// the game's core: this is at the end of loading.
+	int pinN3DSStreamedTextures(size_t tKeepFree, size_t* oPinnedBytes) {
+		std::vector<std::pair<Texture, std::pair<int, int>>> all(gAllStreamed.begin(), gAllStreamed.end());
+		std::sort(all.begin(), all.end(), [](const std::pair<Texture, std::pair<int, int>>& a, const std::pair<Texture, std::pair<int, int>>& b) {
+			const N3DSTextureStream* sa = a.first->mStream;
+			const N3DSTextureStream* sb = b.first->mStream;
+			if (sa->mImageSize != sb->mImageSize) return sa->mImageSize > sb->mImageSize;
+			if (sa->mImageKey != sb->mImageKey) return sa->mImageKey < sb->mImageKey;
+			return a.first < b.first;
+		});
+		int pinned = 0;
+		size_t pinnedBytes = 0;
+		std::vector<unsigned char> indices;
+		gN3DSStreamsForceSync = 1;
+		for (const auto& entry : all) {
+			Texture texture = entry.first;
+			if (texture->mIsPinned) continue;
+			const int w = entry.second.first, h = entry.second.second;
+			if (getN3DSHeapFree() < tKeepFree + size_t(texture->mStream->mImageSize) * 2 + size_t(w) * h * 2) break;
+			if (texture->mIndexed) letStreamedPixelsGo(texture);
+			indices.assign(size_t(w) * h, 0);
+			if (texture->mStream->mLoad(texture->mStream, indices.data(), w, h) != N3DS_STREAM_LOADED) continue;
+			int size = 0;
+			unsigned char* compressed = compressIndices(indices.data(), w * h, &size);
+			if (!compressed) break;
+			texture->mIndexed = compressed;
+			texture->mIndexedSize = size;
+			texture->mIsPinned = 1;
+			pinned++;
+			pinnedBytes += size;
+		}
+		gN3DSStreamsForceSync = 0;
+		addN3DSPerfLine("  streamed sprite pieces kept for good: %d of %u (%u KB), heap %u KB free", pinned, (unsigned)all.size(), (unsigned)(pinnedBytes / 1024), (unsigned)(getN3DSHeapFree() / 1024));
+		if (oPinnedBytes) *oPinnedBytes = pinnedBytes;
+		return pinned;
 	}
 
 	// A paletted texture's texels from its indices, with its palette as it

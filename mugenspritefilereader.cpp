@@ -1007,6 +1007,9 @@ typedef struct {
 	N3DSStreamRequest mRequest;
 	std::vector<uint8_t> mResult;
 	int mIsResultValid = 0;
+	uint32_t mReads = 0;         // for the load log: read there,
+	uint64_t mReadTicks = 0;     // how long it took,
+	uint32_t mGameCoreReads = 0; // and read on the game's core instead
 } N3DSStreamWorker;
 
 // Never destroyed: the thread waits on it until the very end (destroyed at
@@ -1142,6 +1145,9 @@ static void runN3DSStreamWorker(void*) {
 		}
 		std::vector<uint8_t> image;
 		int isValid = 0;
+#ifdef __3DS__
+		const uint64_t start = svcGetSystemTick();
+#endif
 		try {
 			isValid = loadN3DSStreamOnWorker(request, image);
 		}
@@ -1153,6 +1159,10 @@ static void runN3DSStreamWorker(void*) {
 			gN3DSWorker.mResult.swap(image);
 			gN3DSWorker.mIsResultValid = isValid;
 			gN3DSWorker.mState = N3DS_WORKER_DONE;
+			gN3DSWorker.mReads++;
+#ifdef __3DS__
+			gN3DSWorker.mReadTicks += svcGetSystemTick() - start;
+#endif
 		}
 	}
 }
@@ -1172,9 +1182,11 @@ static void startN3DSStreamWorker() {
 	// else on the game's own, when it waits for the screen.
 	s32 priority = 0x30;
 	svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
-	Thread thread = threadCreate(runN3DSStreamWorkerThread, NULL, 64 * 1024, priority + 1, 2, true);
-	if (!thread) thread = threadCreate(runN3DSStreamWorkerThread, NULL, 64 * 1024, priority + 1, -2, true);
+	int core = 2;
+	Thread thread = threadCreate(runN3DSStreamWorkerThread, NULL, 64 * 1024, priority + 1, core, true);
+	if (!thread) thread = threadCreate(runN3DSStreamWorkerThread, NULL, 64 * 1024, priority + 1, core = -2, true);
 	gN3DSWorker.mIsAvailable = thread != NULL;
+	addN3DSPerfLine("  streamed sprites' reader: %s", !thread ? "not started (read on the game's core)" : core == 2 ? "on the other core" : "on the game's core, under it");
 #else
 	std::thread(runN3DSStreamWorker, nullptr).detach();
 	gN3DSWorker.mIsAvailable = 1;
@@ -1218,7 +1230,7 @@ static int loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oIndi
 	}
 
 	startN3DSStreamWorker();
-	const int isOnWorker = gN3DSWorker.mIsAvailable && isN3DSStreamKindOnWorker(e->mKind);
+	const int isOnWorker = gN3DSWorker.mIsAvailable && isN3DSStreamKindOnWorker(e->mKind) && !gN3DSStreamsForceSync;
 	if (isOnWorker) {
 		std::unique_lock<std::mutex> lock(gN3DSWorker.mMutex);
 		if (gN3DSWorker.mState == N3DS_WORKER_DONE) {
@@ -1262,6 +1274,7 @@ static int loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oIndi
 		letN3DSStreamedPixelsGo(need - getN3DSHeapFree());
 		if (getN3DSHeapFree() < need) return N3DS_STREAM_FAILED;
 	}
+	if (!gN3DSStreamsForceSync) gN3DSWorker.mGameCoreReads++;
 	gIsLoadingN3DSStream = 1;
 	loadN3DSSpriteStreamUnguarded(e, oIndices, tWidth, tHeight);
 	gIsLoadingN3DSStream = 0;
@@ -1345,6 +1358,15 @@ static void freeN3DSSpriteStream(N3DSTextureStream* tStream) {
 	free(tStream);
 	if (gN3DSLiveStreams && --gN3DSLiveStreams) return;
 	forgetN3DSStreamWorkerResult();
+#ifdef __3DS__
+	if (gN3DSWorker.mReads || gN3DSWorker.mGameCoreReads) {
+		const double ms = gN3DSWorker.mReadTicks / (double)SYSCLOCK_ARM11 * 1000.0;
+		addN3DSPerfLine("  streamed sprites read: %u on the other core (%.0f ms there, %.1f ms each), %u on the game's core (LZ5)",
+			(unsigned)gN3DSWorker.mReads, ms, gN3DSWorker.mReads ? ms / gN3DSWorker.mReads : 0.0, (unsigned)gN3DSWorker.mGameCoreReads);
+	}
+#endif
+	gN3DSWorker.mReads = gN3DSWorker.mGameCoreReads = 0;
+	gN3DSWorker.mReadTicks = 0;
 	letN3DSStreamedPixelsGo(0);
 	letN3DSStreamCacheGo();
 	for (auto& open : gN3DSStreamFiles) {
@@ -1385,6 +1407,8 @@ static MugenSpriteFileSprite makeN3DSStreamedSprite(int tKind, uint32_t tOffset,
 			gN3DSLiveStreams++;
 			stream->mBase.mLoad = loadN3DSSpriteStream;
 			stream->mBase.mFree = freeN3DSSpriteStream;
+			stream->mBase.mImageSize = uint32_t(tBytesPerLine) * tHeight;
+			stream->mBase.mImageKey = tOffset;
 			stream->mPath = gN3DSStreamPath;
 			stream->mOffset = tOffset;
 			stream->mLength = tLength;

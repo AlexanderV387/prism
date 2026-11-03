@@ -77,6 +77,7 @@ namespace prism {
 		data->mIsInitialized = 0;
 		data->mIndexed = NULL;
 		data->mIndexedSize = 0;
+		data->mIsPinned = 0;
 		data->mOwnPalette = -1;
 		data->mPaletteVersion = -1;
 		data->mLastUsedFrame = 0;

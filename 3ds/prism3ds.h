@@ -30,6 +30,11 @@ namespace prism {
 	// Lets streamed textures' pixels go, those drawn longest ago first, until
 	// tWanted bytes are free (0: all); the bytes freed.
 	size_t letN3DSStreamedPixelsGo(size_t tWanted);
+	// Streamed textures read now and kept for good while the heap keeps
+	// tKeepFree, the biggest sprites first; how many (and their bytes).
+	int pinN3DSStreamedTextures(size_t tKeepFree, size_t* oPinnedBytes);
+	// Streamed sprites read on the game's core, not the other (pinning).
+	extern int gN3DSStreamsForceSync;
 	// The heap not in use, from newlib's count and the heap's size.
 	size_t getN3DSHeapFree();
 	// What the sprite reader keeps of the last streamed sprite, let go with them.
