@@ -459,11 +459,23 @@ namespace prism {
 	// Lets the texels go of the paletted texture drawn longest ago (not in
 	// this frame or the one before: the GPU may still draw them). 0 if there
 	// is none.
+	// A streamed one without its pixels at hand is read from the card again
+	// to be drawn (on the other core, about 15 ms: not drawn meanwhile, the
+	// flicker of New Kyouki's big effects); counted as drawn this many frames
+	// later, the others go first.
+	static const unsigned int STREAMED_EVICTION_GRACE = 180;
+
 	static int evictOldestTexture() {
 		Texture oldest = NULL;
+		unsigned int oldestFrame = 0;
 		for (const auto texture : gResidentTextures) {
 			if (texture->mLastUsedFrame + 1 >= gN3DSTextureFrame) continue;
-			if (!oldest || texture->mLastUsedFrame < oldest->mLastUsedFrame) oldest = texture;
+			const int isCostly = texture->mStream && !texture->mIndexed;
+			const unsigned int frame = texture->mLastUsedFrame + (isCostly ? STREAMED_EVICTION_GRACE : 0);
+			if (!oldest || frame < oldestFrame) {
+				oldest = texture;
+				oldestFrame = frame;
+			}
 		}
 		if (!oldest) return 0;
 		C3D_TexDelete(&oldest->mTex);

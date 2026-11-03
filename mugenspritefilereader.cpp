@@ -870,6 +870,8 @@ void setMugenSpriteFileReaderHeapReserve(size_t tReserve) {
 static const size_t N3DS_BIG_SPRITE_NEED = 512 * 1024;
 static const size_t N3DS_BIG_SPRITE_EXTRA_RESERVE = 4 * 1024 * 1024;
 
+// Not logged one by one (New Kyouki: 1511 of them a fight, the load's log
+// text grown by 100s of KB): the load's line says how many were streamed.
 static int hasN3DSHeapRoomForSprite(size_t tNeeded) {
 	if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits) return 1;
 	const size_t reserve = gN3DSSpriteHeapReserve + (tNeeded >= N3DS_BIG_SPRITE_NEED ? N3DS_BIG_SPRITE_EXTRA_RESERVE : 0);
@@ -880,7 +882,6 @@ static int hasN3DSHeapRoomForSprite(size_t tNeeded) {
 		gN3DSHeapUsedCheckedSprites = 1;
 		if (gN3DSHeapUsed + tNeeded + reserve > __ctru_heap_size) {
 			gN3DSSpritesLeftOut++;
-			logWarning("Out of heap memory: a sprite left out.");
 			return 0;
 		}
 	}
@@ -891,7 +892,6 @@ static int hasN3DSHeapRoomForSprite(size_t tNeeded) {
 		void* probe = malloc(tNeeded + (tNeeded >= N3DS_BIG_SPRITE_NEED ? 1024 * 1024 : 512 * 1024));
 		if (!probe) {
 			gN3DSSpritesLeftOut++;
-			logWarning("Out of heap memory: a sprite left out.");
 			return 0;
 		}
 		free(probe);

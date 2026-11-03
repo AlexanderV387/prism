@@ -51,6 +51,7 @@ namespace prism {
 	double getN3DSPerfMilliseconds(uint64_t tTicks);
 
 	void initN3DSPerf();
+	void flushN3DSPerfOnError();
 	void addN3DSPerfLine(const char* tFormat, ...);
 
 	// Ways of reading a sprite file: 0 small reads through newlib's buffer,

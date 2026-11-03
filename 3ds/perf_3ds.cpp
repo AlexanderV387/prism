@@ -89,7 +89,7 @@ namespace prism {
 		std::string mName;
 		std::vector<std::string> mLines;
 		std::vector<std::pair<std::string, int>> mWarnings;
-		std::map<std::string, int> mWarningIndices;
+		std::map<uint32_t, int> mWarningIndices;   // by the text's hash
 		int mDroppedWarnings;
 	} CompatSection;
 
@@ -121,6 +121,10 @@ namespace prism {
 		fwrite(gPerf.mPending.data(), 1, gPerf.mPending.size(), gPerf.mFile);
 		fflush(gPerf.mFile);
 		gPerf.mPending.clear();
+		// Its room let go too when big: grown while a fight loaded (New
+		// Kyouki's: 100s of KB), it stayed in the middle of the heap for the
+		// next fight.
+		if (gPerf.mPending.capacity() > 16 * 1024) std::string().swap(gPerf.mPending);
 	}
 
 	static N3DSPerfCounters subtract(const N3DSPerfCounters& a, const N3DSPerfCounters& b) {
@@ -288,16 +292,21 @@ namespace prism {
 	static void addCompatWarning(const LogEntry& tEntry) {
 		if (gCompat.mCurrent < 0) gCompat.mCurrent = findCompatSection("outside a character");
 		auto& section = gCompat.mSections[gCompat.mCurrent];
-		std::string text = tEntry.mText;
-		while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
-		if (tEntry.mType == LOG_TYPE_ERROR) text = "ERROR " + text;
+		// Found again by a hash of the text, nothing made in the heap: a
+		// warning can come thousands of times in a fight.
+		size_t length = strlen(tEntry.mText);
+		while (length && (tEntry.mText[length - 1] == '\n' || tEntry.mText[length - 1] == '\r')) length--;
+		uint32_t hash = tEntry.mType == LOG_TYPE_ERROR ? 2166136261u ^ 0x5Au : 2166136261u;
+		for (size_t i = 0; i < length; i++) hash = (hash ^ (uint8_t)tEntry.mText[i]) * 16777619u;
 		gCompat.mIsDirty = 1;
-		const auto it = section.mWarningIndices.find(text);
+		const auto it = section.mWarningIndices.find(hash);
 		if (it != section.mWarningIndices.end()) {
 			section.mWarnings[it->second].second++;
 		}
 		else if ((int)section.mWarnings.size() < N3DS_COMPAT_MAXIMUM_WARNINGS) {
-			section.mWarningIndices[text] = (int)section.mWarnings.size();
+			std::string text(tEntry.mText, length);
+			if (tEntry.mType == LOG_TYPE_ERROR) text = "ERROR " + text;
+			section.mWarningIndices[hash] = (int)section.mWarnings.size();
 			section.mWarnings.push_back(std::make_pair(text, 1));
 			// A new one in a fight: written at once, in case it crashes next.
 			if (!gPerf.mIsLoading) writeCompatLog();
@@ -357,6 +366,15 @@ namespace prism {
 		ptmSysmExit();
 		addN3DSPerfLine("CPU: %s, loop of 50 million steps: %.0f ms as started, %.0f ms in the slow mode (0x%08lX), %.0f ms in the fast mode (0x%08lX)",
 			isNew3DS ? "New 3DS" : "Old 3DS", asStarted, slow, (unsigned long)slowResult, fast, (unsigned long)fastResult);
+	}
+
+	// On an error the game stops on: what was waiting written out (a fight's
+	// lines are otherwise written at the next load), the compatibility log too.
+	static void writeCompatLog();
+	void flushN3DSPerfOnError() {
+		if (gPerf.mFrames) writeFrameStatistics();
+		flushPerf();
+		writeCompatLog();
 	}
 
 	void initN3DSPerf() {
