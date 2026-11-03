@@ -1262,8 +1262,8 @@ static void waitForN3DSStreamWorker() {
 // Small sprites are read on the game's core at once (as before the other
 // core: their effects drawn when they come) for up to this long a frame;
 // the big ones, and the rest, on the other core.
-static const uint32_t N3DS_STREAM_SMALL_LENGTH = 32 * 1024;
-static const double N3DS_STREAM_SYNC_MS_A_FRAME = 6.0;
+static const uint32_t N3DS_STREAM_SMALL_LENGTH = 64 * 1024;
+static const double N3DS_STREAM_SYNC_MS_A_FRAME = 8.0;
 
 static int isN3DSStreamCached(const N3DSSpriteStream* e) {
 	return !gN3DSStreamCache.mImage.empty() && gN3DSStreamCache.mPath == e->mPath && gN3DSStreamCache.mOffset == e->mOffset;
