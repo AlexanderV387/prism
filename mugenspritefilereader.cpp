@@ -901,6 +901,31 @@ static int hasN3DSHeapRoomForSprite(size_t tNeeded) {
 #endif
 
 #ifdef N3DS_HEAP_GUARD
+// The blocks a big sprite is loaded with, all there at once: its data as
+// read, its pixels decoded, and the same again copied into its texture's
+// pieces. One piece of the heap for all of them was not enough: an HD
+// Chun-Li's 1024x988 super frame (1 MB) found room for the decoded pixels,
+// then none for the copy, and the game ended. Those streamed instead.
+static int hasN3DSHeapRoomForSpriteBlocks(size_t tDataLength, size_t tPixelBytes) {
+	if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits) return 1;
+	if (tPixelBytes < 256 * 1024) return 1;
+	void* blocks[4] = { NULL, NULL, NULL, NULL };
+	const size_t sizes[4] = { tDataLength + 16, tPixelBytes + 16, tPixelBytes + 16, 512 * 1024 };
+	int isRoom = 1;
+	for (int i = 0; i < 4; i++) {
+		blocks[i] = malloc(sizes[i]);
+		if (!blocks[i]) {
+			isRoom = 0;
+			break;
+		}
+	}
+	for (int i = 0; i < 4; i++) free(blocks[i]);
+	if (!isRoom) gN3DSSpritesLeftOut++;
+	return isRoom;
+}
+#endif
+
+#ifdef N3DS_HEAP_GUARD
 // [3DS] Streamed sprites: one with no room in the heap is not left out but
 // read from its file again when drawn (texture_3ds.cpp keeps a few of them,
 // those drawn last): where it is in the file, how it is stored, and the
@@ -2230,7 +2255,8 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 #ifdef N3DS_HEAP_GUARD
 	// A PNG is decoded to 32 bits and copied once more in pieces (twice its
 	// pixels in 4 bytes), whatever its depth; the others, its 8-bit pixels.
-	if ((isPaletted || isRawPNG) && !hasN3DSHeapRoomForSprite((size_t)sprite.mWidth * sprite.mHeight * (isRawPNG ? 8 : 3) + sprite.mDataLength)) {
+	if ((isPaletted || isRawPNG) && (!hasN3DSHeapRoomForSprite((size_t)sprite.mWidth * sprite.mHeight * (isRawPNG ? 8 : 3) + sprite.mDataLength)
+		|| !hasN3DSHeapRoomForSpriteBlocks(sprite.mDataLength, (size_t)sprite.mWidth * sprite.mHeight * (isRawPNG ? 4 : 1)))) {
 		// Paletted ones read again from the file when drawn; the others left out.
 		const int kind = sprite.mFormat == 0 ? N3DS_STREAM_RAW : sprite.mFormat == 2 ? N3DS_STREAM_RLE8 : sprite.mFormat == 4 ? N3DS_STREAM_LZ5 : sprite.mFormat == 10 ? N3DS_STREAM_PNG8 : -1;
 		if (kind >= 0 && palette < int(tDst->mPalettes.size())) {
