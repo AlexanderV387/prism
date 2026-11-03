@@ -196,7 +196,14 @@ namespace prism {
 	static std::unordered_set<Texture> gResidentTextures;   // paletted, with texels
 	static std::vector<unsigned char> gIndexScratch;
 
-	void advanceN3DSTextureFrame() { gN3DSTextureFrame++; }
+	// Time spent this frame reading streamed sprites on the game's core (the
+	// small ones are read there at once, while it lasts).
+	uint64_t gN3DSStreamSyncTicksThisFrame;
+
+	void advanceN3DSTextureFrame() {
+		gN3DSTextureFrame++;
+		gN3DSStreamSyncTicksThisFrame = 0;
+	}
 
 	// Paletted textures' own palettes (a sprite's in its SFF, not one of
 	// prism's 4), as RGBA5551, each kept once for all its textures.
@@ -250,7 +257,10 @@ namespace prism {
 	static size_t gStreamedBytes;
 	static const size_t STREAMED_BUDGET = 3 * 1024 * 1024;
 
+	void adjustN3DSHeapFree(long tChange);
+
 	static void letStreamedPixelsGo(Texture tTexture) {
+		adjustN3DSHeapFree(tTexture->mIndexedSize);
 		gStreamedBytes -= tTexture->mIndexedSize;
 		free(tTexture->mIndexed);
 		tTexture->mIndexed = NULL;
@@ -292,9 +302,29 @@ namespace prism {
 
 	// The heap not in use (newlib's: what malloc has handed out, from the
 	// heap's size).
-	size_t getN3DSHeapFree() {
+	size_t getN3DSHeapFreeExact() {
 		const size_t used = mallinfo().uordblks;
 		return __ctru_heap_size > used ? __ctru_heap_size - used : 0;
+	}
+
+	// Asked once a frame: mallinfo() goes through every free block, slow
+	// when the heap is in pieces (asked for each streamed piece waiting to be
+	// read, frames took 25 to 50 ms with New Kyouki).
+	static size_t gHeapFreeCached;
+	static unsigned int gHeapFreeFrame;
+
+	size_t getN3DSHeapFree() {
+		if (gHeapFreeFrame != gN3DSTextureFrame) {
+			gHeapFreeCached = getN3DSHeapFreeExact();
+			gHeapFreeFrame = gN3DSTextureFrame;
+		}
+		return gHeapFreeCached;
+	}
+
+	void adjustN3DSHeapFree(long tChange) {
+		if (gHeapFreeFrame != gN3DSTextureFrame) return;
+		if (tChange < 0 && size_t(-tChange) > gHeapFreeCached) gHeapFreeCached = 0;
+		else gHeapFreeCached += tChange;
 	}
 
 	// Every streamed texture there is, with its size (to keep some for good).
@@ -471,6 +501,10 @@ namespace prism {
 	static int loadStreamedPixels(Texture tTexture, int tWidth, int tHeight) {
 		const uint64_t start = getN3DSPerfTicks();
 		gStreamedInUse = tTexture;
+		// First whether its sprite is there (or can be read now): one still
+		// being read on the other core costs nothing more this frame.
+		const int probed = tTexture->mStream->mLoad(tTexture->mStream, NULL, tWidth, tHeight);
+		if (probed != N3DS_STREAM_LOADED) return probed;
 		{
 			const size_t need = (size_t)tWidth * tHeight * 2 + STREAMED_HEAP_HEADROOM;
 			const size_t heapFree = getN3DSHeapFree();
@@ -488,6 +522,7 @@ namespace prism {
 		tTexture->mIndexed = compressIndices(indices.data(), tWidth * tHeight, &tTexture->mIndexedSize);
 		indices.swap(gStreamScratch);
 		if (!tTexture->mIndexed) return 0;
+		adjustN3DSHeapFree(-long(tTexture->mIndexedSize));
 		gStreamedBytes += tTexture->mIndexedSize;
 		gIsChangingStreamed = 1;
 		gStreamedWithPixels.insert(tTexture);
@@ -528,7 +563,7 @@ namespace prism {
 			Texture texture = entry.first;
 			if (texture->mIsPinned) continue;
 			const int w = entry.second.first, h = entry.second.second;
-			if (getN3DSHeapFree() < tKeepFree + size_t(texture->mStream->mImageSize) * 2 + size_t(w) * h * 2) break;
+			if (getN3DSHeapFreeExact() < tKeepFree + size_t(texture->mStream->mImageSize) * 2 + size_t(w) * h * 2) break;
 			if (texture->mIndexed) letStreamedPixelsGo(texture);
 			indices.assign(size_t(w) * h, 0);
 			if (texture->mStream->mLoad(texture->mStream, indices.data(), w, h) != N3DS_STREAM_LOADED) continue;
@@ -542,7 +577,7 @@ namespace prism {
 			pinnedBytes += size;
 		}
 		gN3DSStreamsForceSync = 0;
-		addN3DSPerfLine("  streamed sprite pieces kept for good: %d of %u (%u KB), heap %u KB free", pinned, (unsigned)all.size(), (unsigned)(pinnedBytes / 1024), (unsigned)(getN3DSHeapFree() / 1024));
+		addN3DSPerfLine("  streamed sprite pieces kept for good: %d of %u (%u KB), heap %u KB free", pinned, (unsigned)all.size(), (unsigned)(pinnedBytes / 1024), (unsigned)(getN3DSHeapFreeExact() / 1024));
 		if (oPinnedBytes) *oPinnedBytes = pinnedBytes;
 		return pinned;
 	}

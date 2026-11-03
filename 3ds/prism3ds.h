@@ -35,8 +35,13 @@ namespace prism {
 	int pinN3DSStreamedTextures(size_t tKeepFree, size_t* oPinnedBytes);
 	// Streamed sprites read on the game's core, not the other (pinning).
 	extern int gN3DSStreamsForceSync;
-	// The heap not in use, from newlib's count and the heap's size.
+	// The heap not in use, from newlib's count and the heap's size: asked
+	// once a frame (and kept up to date with the streamed pixels let go and
+	// read), or now (slow when the heap is in pieces).
 	size_t getN3DSHeapFree();
+	size_t getN3DSHeapFreeExact();
+	// Time spent this frame reading streamed sprites on the game's core.
+	extern uint64_t gN3DSStreamSyncTicksThisFrame;
 	// What the sprite reader keeps of the last streamed sprite, let go with them.
 	extern size_t (*gN3DSLetStreamCacheGo)();
 
