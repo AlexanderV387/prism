@@ -207,6 +207,8 @@ namespace prism {
 	// small ones are read there at once, while it lasts).
 	uint64_t gN3DSStreamSyncTicksThisFrame;
 
+	unsigned int getN3DSTextureFrame() { return gN3DSTextureFrame; }
+
 	void advanceN3DSTextureFrame() {
 		gN3DSTextureFrame++;
 		gN3DSStreamSyncTicksThisFrame = 0;

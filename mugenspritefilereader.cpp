@@ -921,6 +921,7 @@ typedef struct {
 	uint8_t mKind;
 	uint16_t mWidth, mHeight, mBytesPerLine;   // the whole image
 	uint16_t mX, mY;                           // the piece's corner in it
+	uint32_t mFailedFrame;                     // when it last could not be read (0: never)
 } N3DSSpriteStream;
 
 static std::set<std::string> gN3DSStreamPaths;     // each sprite file's path, kept for its streams
@@ -1271,8 +1272,7 @@ static int isN3DSStreamCached(const N3DSSpriteStream* e) {
 
 // tIndices NULL: only whether the sprite is there now (read at once when it
 // can be, asked of the other core if not), nothing copied.
-static int loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight) {
-	N3DSSpriteStream* e = (N3DSSpriteStream*)tStream;
+static int loadN3DSSpriteStreamTried(N3DSSpriteStream* e, unsigned char* oIndices, int tWidth, int tHeight) {
 	if (isN3DSStreamCached(e)) {
 		if (oIndices) copyN3DSStreamPiece(e, makeBuffer(gN3DSStreamCache.mImage.data(), uint32_t(gN3DSStreamCache.mImage.size())), oIndices, tWidth, tHeight);
 		return N3DS_STREAM_LOADED;
@@ -1344,6 +1344,20 @@ static int loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oIndi
 	return N3DS_STREAM_PENDING;
 }
 
+// One that could not be read (no room in the heap) is not tried again for
+// a while: tried every frame, it was read from the card each time and let
+// go again (New Kyouki against himself: 32000 reads, 22 ms a frame).
+static const uint32_t N3DS_STREAM_RETRY_FRAMES = 45;
+
+static int loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight) {
+	N3DSSpriteStream* e = (N3DSSpriteStream*)tStream;
+	const uint32_t frame = getN3DSTextureFrame();
+	if (e->mFailedFrame && frame - e->mFailedFrame < N3DS_STREAM_RETRY_FRAMES && !isN3DSStreamCached(e)) return N3DS_STREAM_FAILED;
+	const int ret = loadN3DSSpriteStreamTried(e, oIndices, tWidth, tHeight);
+	e->mFailedFrame = ret == N3DS_STREAM_FAILED ? (frame ? frame : 1) : 0;
+	return ret;
+}
+
 static void copyN3DSStreamPiece(const N3DSSpriteStream* e, const Buffer& tImage, unsigned char* oIndices, int tWidth, int tHeight) {
 	// The piece, as getSingleAllocatedBufferFromSource cuts it.
 	const uint8_t* source = (const uint8_t*)tImage.mData;
@@ -1391,6 +1405,27 @@ static int loadN3DSSpriteStreamUnguarded(N3DSSpriteStream* e) {
 	uint8_t* data = gN3DSStreamData.data();
 
 	const uint32_t size = uint32_t(e->mBytesPerLine) * e->mHeight;
+	// LZ5 (most of SFF v2's): decoded straight into where it is kept, one
+	// piece of the heap asked for, not two.
+	if (e->mKind == N3DS_STREAM_LZ5 && e->mLength >= 4) {
+		uint32_t decompressedSize;
+		memcpy(&decompressedSize, data, 4);
+		std::vector<uint8_t>().swap(gN3DSStreamCache.mImage);
+		gN3DSStreamCache.mPath = NULL;
+		try {
+			gN3DSStreamCache.mImage.resize(size_t(std::max(decompressedSize, size)) + 16, 0);
+		}
+		catch (const std::bad_alloc&) {
+			std::vector<uint8_t>().swap(gN3DSStreamCache.mImage);
+			return 0;
+		}
+		decompressLZ5(gN3DSStreamCache.mImage.data(), data + 4, e->mLength - 4);
+		gN3DSStreamCache.mImage.resize(size);
+		gN3DSStreamCache.mPath = e->mPath;
+		gN3DSStreamCache.mOffset = e->mOffset;
+		if (gN3DSStreamData.capacity() > 256 * 1024) std::vector<uint8_t>().swap(gN3DSStreamData);
+		return 1;
+	}
 	// Room for it in one piece, twice (decoded, then kept): the heap can have
 	// it in all but only in pieces (New Kyouki against himself stopped on a
 	// 200 KB sprite with 2 MB free); without it, not drawn this time rather
@@ -1505,6 +1540,7 @@ static MugenSpriteFileSprite makeN3DSStreamedSprite(int tKind, uint32_t tOffset,
 			stream->mBytesPerLine = (uint16_t)tBytesPerLine;
 			stream->mX = (uint16_t)x;
 			stream->mY = (uint16_t)y;
+			stream->mFailedFrame = 0;
 			MugenSpriteFileSubSprite piece;
 			piece.mOffset = Vector2DI(x, y);
 			piece.mTexture = loadN3DSStreamedTexture(&stream->mBase, palette, gPrismMugenSpriteFileReaderData.mPaletteID, dx, dy);
