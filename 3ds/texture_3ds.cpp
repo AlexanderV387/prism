@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <new>
 
 #include "prism/file.h"
 #include "prism/log.h"
@@ -572,7 +573,18 @@ namespace prism {
 		}
 		std::vector<unsigned char> indices;
 		indices.swap(gStreamScratch);
-		indices.assign((size_t)tWidth * tHeight, 0);
+		// The heap can have enough free in all but not in one piece (New
+		// Kyouki against himself ended on a 500x400 sprite, 200000 bytes,
+		// with 195 KB the biggest piece): not drawn this time, rather than
+		// the game's end.
+		try {
+			indices.assign((size_t)tWidth * tHeight, 0);
+		}
+		catch (const std::bad_alloc&) {
+			std::vector<unsigned char>().swap(indices);
+			letN3DSStreamedPixelsGo(0);
+			return 0;
+		}
 		const int loaded = tTexture->mStream->mLoad(tTexture->mStream, indices.data(), tWidth, tHeight);
 		if (loaded != N3DS_STREAM_LOADED) {
 			indices.swap(gStreamScratch);
@@ -624,7 +636,13 @@ namespace prism {
 			const int w = entry.second.first, h = entry.second.second;
 			if (getN3DSHeapFreeExact() < tKeepFree + size_t(texture->mStream->mImageSize) * 2 + size_t(w) * h * 2) break;
 			if (texture->mIndexed) letStreamedPixelsGo(texture);
-			indices.assign(size_t(w) * h, 0);
+			try {
+				indices.assign(size_t(w) * h, 0);
+			}
+			catch (const std::bad_alloc&) {
+				std::vector<unsigned char>().swap(indices);
+				break;
+			}
 			if (texture->mStream->mLoad(texture->mStream, indices.data(), w, h) != N3DS_STREAM_LOADED) continue;
 			int size = 0;
 			unsigned char* compressed = compressIndices(indices.data(), w * h, &size);

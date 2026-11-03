@@ -335,6 +335,8 @@ MugenAnimationHandlerElement* addMugenAnimation(MugenAnimation* tStartAnimation,
 	e.mHasSprite = 0;
 	e.mSprite = NULL;
 	e.mLastDrawnSprite = NULL;
+	e.mPendingSprite = NULL;
+	e.mPendingSpriteFrames = 0;
 	e.mIsStretchedToScreenWidth = 0;
 
 	e.mHasPassiveHitCB = 0;
@@ -636,6 +638,8 @@ void setMugenAnimationSprites(MugenAnimationHandlerElement* e, MugenSpriteFile *
 {
 	e->mSprites = tSprites;
 	e->mLastDrawnSprite = NULL;
+	e->mPendingSprite = NULL;
+	e->mPendingSpriteFrames = 0;
 	updateStepSpriteAndSpriteValidity(e);
 }
 
@@ -816,6 +820,7 @@ void changeMugenAnimation(MugenAnimationHandlerElement* e, MugenAnimation * tNew
 void changeMugenAnimationWithStartStep(MugenAnimationHandlerElement* e, MugenAnimation * tNewAnimation, int tStartStep)
 {
 	e->mAnimation = tNewAnimation;
+	e->mPendingSprite = NULL;   // a sprite of the one before is not waited for
 	startNewAnimationWithStartStep(e, tStartStep);
 }
 
@@ -1319,12 +1324,39 @@ static int isMugenSpriteDrawableNow(MugenSpriteFileSprite* tSprite) {
 // a few (read on the other core): the animation's last one ready is drawn
 // meanwhile instead of nothing (New Kyouki's big effects and the other
 // player, all read from the card, flickered).
+//
+// A sprite being read stays the one asked for until it is there, rather
+// than the animation's newer one each frame: New Kyouki's ultimate shows a
+// face changing to another 320x240 image every two frames; each read was
+// over when the animation had moved on, the next one asked instead, and
+// that face was never drawn at all. Now some of its images are shown, in
+// order. One not there after a while is given up.
+static const int N3DS_PENDING_SPRITE_MOST_FRAMES = 30;
+
 static MugenSpriteFileSprite* findMugenSpriteToDraw(MugenAnimationHandlerElement* e) {
+	MugenSpriteFileSprite* last = e->mLastDrawnSprite;
+	if (e->mPendingSprite && e->mPendingSprite != e->mSprite) {
+		if (isMugenSpriteDrawableNow(e->mPendingSprite)) {
+			e->mLastDrawnSprite = e->mPendingSprite;
+			e->mPendingSprite = NULL;
+			return e->mLastDrawnSprite;
+		}
+		if (++e->mPendingSpriteFrames <= N3DS_PENDING_SPRITE_MOST_FRAMES) {
+			if (last && last != e->mPendingSprite && isMugenSpriteDrawableNow(last)) return last;
+			return e->mPendingSprite;
+		}
+		e->mPendingSprite = NULL;
+	}
 	if (isMugenSpriteDrawableNow(e->mSprite)) {
 		e->mLastDrawnSprite = e->mSprite;
+		e->mPendingSprite = NULL;
 		return e->mSprite;
 	}
-	if (e->mLastDrawnSprite && e->mLastDrawnSprite != e->mSprite && isMugenSpriteDrawableNow(e->mLastDrawnSprite)) return e->mLastDrawnSprite;
+	if (e->mPendingSprite != e->mSprite) {
+		e->mPendingSprite = e->mSprite;
+		e->mPendingSpriteFrames = 0;
+	}
+	if (last && last != e->mSprite && isMugenSpriteDrawableNow(last)) return last;
 	return e->mSprite;
 }
 #endif

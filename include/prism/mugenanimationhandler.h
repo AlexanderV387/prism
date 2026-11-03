@@ -35,6 +35,8 @@ struct MugenAnimationHandlerElement {
 	MugenSpriteFileSprite* mSprite;
 	int mHasSprite;
 	MugenSpriteFileSprite* mLastDrawnSprite;   // [3DS] the last one ready to draw
+	MugenSpriteFileSprite* mPendingSprite;     // [3DS] the one being read, still the one asked for
+	int mPendingSpriteFrames;
 	int mIsStretchedToScreenWidth;             // [3DS] when it covers the game's screen
 
 	int mHasPassiveHitCB;
