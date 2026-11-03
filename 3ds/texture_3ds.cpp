@@ -332,7 +332,9 @@ namespace prism {
 	int gN3DSStreamsForceSync;
 
 	void forgetN3DSTexture(N3DSTextureData* tTexture) {
-		gAllStreamed.erase(tTexture);
+		if (gAllStreamed.erase(tTexture) && gAllStreamed.empty() && gAllStreamed.bucket_count() > 16) {
+			std::unordered_map<Texture, std::pair<int, int>>().swap(gAllStreamed);   // its table let go too
+		}
 		if (tTexture->mStream && tTexture->mIndexed && !tTexture->mIsPinned) letStreamedPixelsGo(tTexture);
 		if (gStreamedInUse == tTexture) gStreamedInUse = NULL;
 		gResidentTextures.erase(tTexture);

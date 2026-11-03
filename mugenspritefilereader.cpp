@@ -884,9 +884,11 @@ static int hasN3DSHeapRoomForSprite(size_t tNeeded) {
 			return 0;
 		}
 	}
-	if (tNeeded >= N3DS_BIG_SPRITE_NEED) {
-		// In one piece, as it is asked for.
-		void* probe = malloc(tNeeded + 1024 * 1024);
+	if (tNeeded >= 64 * 1024) {
+		// In one piece, as it is asked for: after a big fight the heap can
+		// have the room in all, in pieces (Modern Kitana's load stopped on
+		// 174 KB with 30 MB free).
+		void* probe = malloc(tNeeded + (tNeeded >= N3DS_BIG_SPRITE_NEED ? 1024 * 1024 : 512 * 1024));
 		if (!probe) {
 			gN3DSSpritesLeftOut++;
 			logWarning("Out of heap memory: a sprite left out.");
@@ -1079,11 +1081,19 @@ static int decodeN3DSWorkerPNG8(const uint8_t* tData, size_t tLength, int tBytes
 }
 
 // The sprite whole (tBytesPerLine * tHeight indices), from its file.
+static const uint8_t N3DS_STREAM_CLOSE = 255;   // a request to close the file kept open
+
 static int loadN3DSStreamOnWorker(const N3DSStreamRequest& tRequest, std::vector<uint8_t>& oImage) {
 	// The file kept open for the next one (opening one on the card takes
 	// some milliseconds): this thread's own, only touched here.
 	static FILE* file = NULL;
 	static const std::string* filePath = NULL;
+	if (tRequest.mKind == N3DS_STREAM_CLOSE) {
+		if (file) fclose(file);
+		file = NULL;
+		filePath = NULL;
+		return 0;
+	}
 	if (filePath != tRequest.mPath) {
 		if (file) fclose(file);
 		char path[1024];
@@ -1172,7 +1182,7 @@ static void runN3DSStreamWorker(void*) {
 			gN3DSWorker.mResult.swap(image);
 			gN3DSWorker.mIsResultValid = isValid;
 			gN3DSWorker.mState = N3DS_WORKER_DONE;
-			gN3DSWorker.mReads++;
+			if (request.mKind != N3DS_STREAM_CLOSE) gN3DSWorker.mReads++;
 #ifdef __3DS__
 			gN3DSWorker.mReadTicks += svcGetSystemTick() - start;
 #endif
@@ -1215,9 +1225,23 @@ static void dropN3DSStreamWorkerResult() {
 	gN3DSWorker.mState = N3DS_WORKER_IDLE;
 }
 
-// Waits for the sprite being read on the other core, then forgets it.
+static void waitForN3DSStreamWorker();
+
+// Waits for the sprite being read on the other core, then forgets it, and
+// has the other core close its file (nothing left in the heap's middle).
 static void forgetN3DSStreamWorkerResult() {
 	if (!gN3DSWorker.mIsAvailable) return;
+	waitForN3DSStreamWorker();
+	{
+		std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
+		gN3DSWorker.mRequest = { NULL, 0, 0, N3DS_STREAM_CLOSE, 0, 0 };
+		gN3DSWorker.mState = N3DS_WORKER_ASKED;
+	}
+	gN3DSWorker.mCondition.notify_one();
+	waitForN3DSStreamWorker();
+}
+
+static void waitForN3DSStreamWorker() {
 	for (;;) {
 		{
 			std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
@@ -2406,6 +2430,12 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 }
 
 MugenSpriteFile loadMugenSpriteFile(const char * tPath, int tHasPaletteFile, const char* tOptionalPaletteFile) {
+#ifdef N3DS_HEAP_GUARD
+	// The other core's reader made at the first sprite file (the menus'),
+	// low in the heap: made in a fight, its stack stayed in the heap's
+	// middle between fights.
+	startN3DSStreamWorker();
+#endif
 	gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits = 0;
 	return loadMugenSpriteFileGeneral(tPath, tHasPaletteFile, tOptionalPaletteFile);
 }
