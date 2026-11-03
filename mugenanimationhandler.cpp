@@ -1,6 +1,8 @@
 #include "prism/mugenanimationhandler.h"
 
 #include <algorithm>
+#include <stdio.h>
+#include <stdlib.h>
 #include <map>
 #include <unordered_set>
 #include <cassert>
@@ -333,6 +335,7 @@ MugenAnimationHandlerElement* addMugenAnimation(MugenAnimation* tStartAnimation,
 	e.mHasSprite = 0;
 	e.mSprite = NULL;
 	e.mLastDrawnSprite = NULL;
+	e.mIsStretchedToScreenWidth = 0;
 
 	e.mHasPassiveHitCB = 0;
 	e.mHasAttackHitCB = 0;
@@ -622,6 +625,11 @@ void setMugenAnimationBlendType(MugenAnimationHandlerElement* e, BlendType tBlen
 {
 	e->mBlendType = tBlendType;
 	e->mHasBlendType = 1;
+}
+
+void setMugenAnimationStretchedToScreenWidth(MugenAnimationHandlerElement* e, int tIsStretched)
+{
+	e->mIsStretchedToScreenWidth = tIsStretched;
 }
 
 void setMugenAnimationSprites(MugenAnimationHandlerElement* e, MugenSpriteFile * tSprites)
@@ -1084,6 +1092,8 @@ typedef struct {
 	Position mBasePosition;
 
 	Position2D mCameraCenter;
+	float mStretchX;         // [3DS] 1: not stretched to the screen's sides
+	float mStretchCenterX;
 } DrawSingleMugenAnimationSpriteCaller;
 
 static void drawSingleMugenAnimationSprite(MugenSpriteFileSubSprite& tSprite, DrawSingleMugenAnimationSpriteCaller& tCaller) {
@@ -1191,6 +1201,12 @@ static void drawSingleMugenAnimationSprite(MugenSpriteFileSubSprite& tSprite, Dr
 	setDrawingBaseColorAdvanced(e->mR, e->mG, e->mB);
 	setDrawingTransparency(e->mAlpha * tCaller.mSrcBlendFactor);
 	setDrawingDestinationTransparency(e->mDestinationAlpha * tCaller.mDstBlendFactor);
+
+	// Last on its corners: the whole sprite as drawn, widened from the
+	// screen's middle.
+	if (tCaller.mStretchX != 1.0f) {
+		scaleDrawing2D(Vector2D(tCaller.mStretchX, 1.0f), Vector2D(tCaller.mStretchCenterX, 0) + gMugenAnimationHandler.mPixelCenter);
+	}
 
 	if (e->mHasCameraScaleReference && *e->mCameraScaleReference != Vector3D(1, 1, 1)) {
 		auto scaledCameraScale = *e->mCameraScaleReference;
@@ -1312,6 +1328,67 @@ static MugenSpriteFileSprite* findMugenSpriteToDraw(MugenAnimationHandlerElement
 	return e->mSprite;
 }
 #endif
+
+#ifdef __3DS__
+float getN3DSScreenSideMargin();
+#endif
+
+// [3DS] A sprite that covers the game's screen from side to side (within a
+// few pixels), but not the top screen's sides past it: widened from the
+// screen's middle until it does (New Kyouki's and others' 320x240 flashes
+// and backgrounds left the sides uncovered).
+static void findMugenAnimationScreenStretch(MugenAnimationHandlerElement* e, DrawSingleMugenAnimationSpriteCaller& tCaller) {
+	tCaller.mStretchX = 1.0f;
+	tCaller.mStretchCenterX = 0;
+	if (!e->mIsStretchedToScreenWidth || !e->mSprite) return;
+#ifdef __3DS__
+	const float margin = getN3DSScreenSideMargin();
+#elif defined(N3DS_TEXTURE_SIM)
+	static const float margin = getenv("N3DS_SIM_SIDE_MARGIN") ? (float)atof(getenv("N3DS_SIM_SIDE_MARGIN")) : 0.0f;
+#else
+	const float margin = 0;
+#endif
+	if (margin <= 0) return;
+	if (tCaller.mAngle || tCaller.mStepAngleRad || e->mHasShear) return;
+
+	float left = tCaller.mBasePosition.x;
+	float right = left + e->mSprite->mOriginalTextureSize.x;
+	int isFacingRight = e->mIsFacingRight;
+	if (hasPrismFlagDynamic(tCaller.mStep->mFlags, MugenAnimationStepFlags::IS_FLIPPING_HORIZONTALLY)) isFacingRight ^= 1;
+	if (!isFacingRight) {
+		const float center = e->mPlayerPositionReference.x;
+		const float mirroredLeft = 2 * center - right;
+		right = 2 * center - left;
+		left = mirroredLeft;
+	}
+	const float deltaX = e->mIsFacingRight ? tCaller.mDelta.x : -tCaller.mDelta.x;
+	left += deltaX;
+	right += deltaX;
+	if (e->mHasCameraPositionReference) {
+		left -= e->mCameraPositionReference->x;
+		right -= e->mCameraPositionReference->x;
+	}
+	const float scaleX = tCaller.mScale.x * tCaller.mStepScaleX;
+	const float scaleCenter = tCaller.mScalePosition.x;
+	left = scaleCenter + (left - scaleCenter) * scaleX;
+	right = scaleCenter + (right - scaleCenter) * scaleX;
+	if (left > right) std::swap(left, right);
+
+	const float width = (float)getScreenSize().x;
+	const float tolerance = width * 0.03f;
+	if (left > tolerance || right < width - tolerance) return;     // not over the whole screen
+	if (left <= -margin && right >= width + margin) return;        // already past the sides
+	const float center = width / 2;
+	float stretch = 1.0f;
+	if (left < center) stretch = std::max(stretch, (center + margin) / (center - left));
+	if (right > center) stretch = std::max(stretch, (center + margin) / (right - center));
+	tCaller.mStretchX = std::min(stretch, 1.6f);
+	tCaller.mStretchCenterX = center;
+#if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+	if (getenv("N3DS_SIM_TRACE_STRETCH")) fprintf(stderr, "n3dssim: stretched anim %d (%dx%d) from %.0f..%.0f by %.2f\n", e->mAnimation ? e->mAnimation->mID : -1,
+		(int)e->mSprite->mOriginalTextureSize.x, (int)e->mSprite->mOriginalTextureSize.y, left, right, tCaller.mStretchX);
+#endif
+}
 
 static void drawSingleMugenAnimation(void* tCaller, MugenAnimationHandlerElement& tData) {
 	(void)tCaller;
@@ -1436,6 +1513,7 @@ static void drawSingleMugenAnimation(void* tCaller, MugenAnimationHandlerElement
 		caller.mStepAngleRad = step->mAngleRad;
 	}
 
+	findMugenAnimationScreenStretch(e, caller);
 	for (auto& texture : e->mSprite->mTextures)
 	{
 		drawSingleMugenAnimationSprite(texture, caller);

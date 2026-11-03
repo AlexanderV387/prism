@@ -123,11 +123,11 @@ namespace prism {
 	// ==========================================================================
 
 	static int gIsFullWidth = 1;
-	// Stretched (the default): the game's 4:3 screen over the whole top
-	// screen, a little wider, as on the PC its full-screen images cover it
-	// all (New Kyouki's 320x240 effects left the sides uncovered); else the
-	// game at its shape, more of the stage seen at the sides.
-	static int gIsStretched = 1;
+	// Stretched: the game's 4:3 screen over the whole top screen, a little
+	// wider; else (the default) the game at its shape, more of the stage
+	// seen at the sides, its full-screen effects widened to them
+	// (mugenanimationhandler.cpp).
+	static int gIsStretched = 0;
 
 	static void updateScreenTransform();
 	void setN3DSScreenFullWidth(int tIsFullWidth) { gIsFullWidth = tIsFullWidth; }

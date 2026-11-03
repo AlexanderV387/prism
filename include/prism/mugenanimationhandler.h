@@ -35,6 +35,7 @@ struct MugenAnimationHandlerElement {
 	MugenSpriteFileSprite* mSprite;
 	int mHasSprite;
 	MugenSpriteFileSprite* mLastDrawnSprite;   // [3DS] the last one ready to draw
+	int mIsStretchedToScreenWidth;             // [3DS] when it covers the game's screen
 
 	int mHasPassiveHitCB;
 	void* mPassiveHitCaller;
@@ -191,6 +192,10 @@ void setMugenAnimationPosition(MugenAnimationHandlerElement* tElement, const Pos
 void setMugenAnimationPositionX(MugenAnimationHandlerElement* tElement, float tX);
 void setMugenAnimationPositionY(MugenAnimationHandlerElement* tElement, float tY);
 void setMugenAnimationBlendType(MugenAnimationHandlerElement* tElement, BlendType tBlendType);
+// [3DS] When its sprite covers the game's whole screen from side to side (a
+// super's flash, a full-screen background), it is stretched to the top
+// screen's sides too (wider than the game's 4:3 screen).
+void setMugenAnimationStretchedToScreenWidth(MugenAnimationHandlerElement* e, int tIsStretched);
 void setMugenAnimationSprites(MugenAnimationHandlerElement* tElement, MugenSpriteFile* tSprites);
 void setMugenAnimationConstraintRectangle(MugenAnimationHandlerElement* tElement, const GeoRectangle2D& tConstraintRectangle);
 
