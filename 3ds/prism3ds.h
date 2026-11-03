@@ -43,7 +43,8 @@ namespace prism {
 	// A .snd's part of the linear memory left for sounds (the next one
 	// loaded; back to all of it after), and its start and end.
 	void setN3DSSoundFileShare(float tShare);
-	void startN3DSSoundFile();
+	void startN3DSSoundFile(size_t tFileSize);
+	int getN3DSSoundFileHalvings();
 	void endN3DSSoundFile();
 	int getN3DSSoundsLeftOut();
 

@@ -21,8 +21,12 @@ namespace prism {
 // drawn (texture_3ds.cpp).
 // Where a streamed paletted texture's pixels are (its sprite in its file,
 // read again when drawn): what reads them, and what lets that go.
+enum { N3DS_STREAM_FAILED = 0, N3DS_STREAM_LOADED = 1, N3DS_STREAM_PENDING = 2 };
+
 typedef struct N3DSTextureStream {
-	void (*mLoad)(struct N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight);
+	// N3DS_STREAM_LOADED, N3DS_STREAM_FAILED or N3DS_STREAM_PENDING (read on
+	// the other core: asked again the next frames).
+	int (*mLoad)(struct N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight);
 	void (*mFree)(struct N3DSTextureStream* tStream);
 } N3DSTextureStream;
 

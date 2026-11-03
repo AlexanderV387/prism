@@ -124,13 +124,14 @@ namespace prism {
 #ifdef __3DS__
 		const int shrunkBefore = getN3DSSoundsShrunk(), leftOutBefore = getN3DSSoundsLeftOut();
 		const uint32_t linearBefore = linearSpaceFree();
-		startN3DSSoundFile();
+		startN3DSSoundFile((size_t)getFileSize(tPath));
+		const int halvings = getN3DSSoundFileHalvings();
 #endif
 		MugenSounds ret = loadMugenSoundFileWithReader();
 #ifdef __3DS__
 		endN3DSSoundFile();
-		addN3DSPerfLine("  sounds %s: %u KB of linear memory, %d kept smaller (8-bit, mono or half the rate), %d left out", tPath,
-			(unsigned)((linearBefore - linearSpaceFree()) / 1024), getN3DSSoundsShrunk() - shrunkBefore, getN3DSSoundsLeftOut() - leftOutBefore);
+		addN3DSPerfLine("  sounds %s: %u KB of linear memory, %d kept smaller (8-bit, mono or half the rate; %d halvings for all), %d left out", tPath,
+			(unsigned)((linearBefore - linearSpaceFree()) / 1024), getN3DSSoundsShrunk() - shrunkBefore, halvings, getN3DSSoundsLeftOut() - leftOutBefore);
 #endif
 		gMugenSoundFileReaderData.mFileReader.mDelete(&gMugenSoundFileReaderData.mFileReader);
 

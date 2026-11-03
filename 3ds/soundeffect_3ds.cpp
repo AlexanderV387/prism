@@ -132,30 +132,46 @@ namespace prism {
 
 	void setN3DSSoundFileShare(float tShare) { gN3DSSoundFileShare = tShare; }
 
-	void startN3DSSoundFile() {
+	// How many halvings every sound of the file gets from the start (all a
+	// bit worse rather than the last ones left out: Modern Kitana lost 103).
+	static int gN3DSSoundFileHalvings;
+
+	void startN3DSSoundFile(size_t tFileSize) {
 		const size_t freeLinear = linearSpaceFree();
 		const size_t forSounds = freeLinear > SOUND_TEXTURE_RESERVE ? freeLinear - SOUND_TEXTURE_RESERVE : 0;
 		gN3DSSoundFileBudget = size_t(forSounds * gN3DSSoundFileShare);
+		gN3DSSoundFileHalvings = 0;
+		for (size_t size = tFileSize; size > gN3DSSoundFileBudget && gN3DSSoundFileHalvings < 3; size /= 2) gN3DSSoundFileHalvings++;
+	}
+
+	int getN3DSSoundFileHalvings() { return gN3DSSoundFileHalvings; }
+
+	// One halving more of a sound's shape (8-bit, then mono, then half the
+	// rate); 0 if there is none left.
+	static int halveSoundShape(const WAVInfo& tInfo, SoundShape* oShape) {
+		if (oShape->mOutBytes == 2) oShape->mOutBytes = 1;
+		else if (oShape->mOutChannels == 2) oShape->mOutChannels = 1;
+		else if (oShape->mStep == 1 && tInfo.mRate >= 16000) oShape->mStep = 2;
+		else return 0;
+		return 1;
 	}
 
 	void endN3DSSoundFile() {
 		gN3DSSoundFileBudget = (size_t)-1;
 		gN3DSSoundFileShare = 1.0f;
+		gN3DSSoundFileHalvings = 0;
 	}
 
 	// The shape a sound of tFrames is kept in, 0 if none fits.
 	static int chooseSoundShape(const WAVInfo& tInfo, u32 tFrames, SoundShape* oShape) {
 		*oShape = { tInfo.mBits / 8, tInfo.mChannels, 1 };
+		for (int i = 0; i < gN3DSSoundFileHalvings; i++) halveSoundShape(tInfo, oShape);
 		const size_t freeLinear = linearSpaceFree();
-		for (int tries = 0; tries < 4; tries++) {
+		for (;;) {
 			const size_t size = getShapedSize(tFrames, *oShape);
 			if (size + SOUND_TEXTURE_RESERVE <= freeLinear && size <= gN3DSSoundFileBudget) return 1;
-			if (oShape->mOutBytes == 2) oShape->mOutBytes = 1;
-			else if (oShape->mOutChannels == 2) oShape->mOutChannels = 1;
-			else if (oShape->mStep == 1 && tInfo.mRate >= 16000) oShape->mStep = 2;
-			else break;
+			if (!halveSoundShape(tInfo, oShape)) return 0;
 		}
-		return 0;
 	}
 
 	// Samples from the WAV's bytes to the shape kept: the DSP's 8-bit

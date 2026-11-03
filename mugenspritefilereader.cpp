@@ -31,6 +31,15 @@
 #include "3ds/prism3ds.h"
 #include <malloc.h>
 #include <new>
+#include <stdio.h>
+#include <stdlib.h>
+#include <setjmp.h>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <chrono>
+#include <vector>
+#include <string>
 // The heap guard, on the 3DS and in its simulation.
 #define N3DS_HEAP_GUARD
 #endif
@@ -959,8 +968,11 @@ static struct {
 static int gIsLoadingN3DSStream;   // its data in use: not let go meanwhile
 static uint32_t gN3DSLiveStreams;  // the streamed textures there are
 
+static void dropN3DSStreamWorkerResult();
+
 static size_t letN3DSStreamCacheGo() {
 	if (gIsLoadingN3DSStream) return 0;
+	dropN3DSStreamWorkerResult();
 	const size_t freed = gN3DSStreamData.capacity() + gN3DSStreamCache.mImage.capacity();
 	std::vector<uint8_t>().swap(gN3DSStreamCache.mImage);
 	gN3DSStreamCache.mPath = NULL;
@@ -971,23 +983,289 @@ static size_t letN3DSStreamCacheGo() {
 static void loadN3DSSpriteStreamUnguarded(N3DSSpriteStream* e, unsigned char* oIndices, int tWidth, int tHeight);
 static void copyN3DSStreamPiece(const N3DSSpriteStream* e, const Buffer& tImage, unsigned char* oIndices, int tWidth, int tHeight);
 
-static void loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight) {
+// [3DS] Streamed sprites read and decoded on the other core: a sprite cost
+// the game's core some 35 ms (Modern Kitana's PNGs: her X-ray images, her
+// blood), two frames, the drawing skipped meanwhile (the X-ray shown in
+// flashes). The game asks, goes on (not drawing it), and takes it when it
+// is there. Only plain C++ there: no memory handler, no prism file reader.
+typedef struct {
+	const std::string* mPath;
+	uint32_t mOffset;
+	uint32_t mLength;
+	uint8_t mKind;
+	uint16_t mBytesPerLine, mHeight;
+} N3DSStreamRequest;
+
+enum { N3DS_WORKER_IDLE, N3DS_WORKER_ASKED, N3DS_WORKER_WORKING, N3DS_WORKER_DONE };
+
+typedef struct {
+	std::mutex mMutex;
+	std::condition_variable mCondition;
+	int mState = N3DS_WORKER_IDLE;
+	int mIsStarted = 0;
+	int mIsAvailable = 0;
+	N3DSStreamRequest mRequest;
+	std::vector<uint8_t> mResult;
+	int mIsResultValid = 0;
+} N3DSStreamWorker;
+
+// Never destroyed: the thread waits on it until the very end (destroyed at
+// the game's exit under it, the exit hung).
+static N3DSStreamWorker& getN3DSStreamWorker() {
+	static N3DSStreamWorker* worker = new N3DSStreamWorker();
+	return *worker;
+}
+#define gN3DSWorker (getN3DSStreamWorker())
+
+static int isN3DSStreamKindOnWorker(int tKind) {
+	return tKind == N3DS_STREAM_PCX || tKind == N3DS_STREAM_RAW || tKind == N3DS_STREAM_RLE8 || tKind == N3DS_STREAM_PNG8;
+}
+
+typedef struct {
+	const uint8_t* mData;
+	size_t mLeft;
+} N3DSPNGMemoryReader;
+
+static void readN3DSWorkerPNG(png_structp tPNG, png_bytep oData, png_size_t tLength) {
+	N3DSPNGMemoryReader* reader = (N3DSPNGMemoryReader*)png_get_io_ptr(tPNG);
+	if (tLength > reader->mLeft) png_error(tPNG, "PNG data cut short");
+	memcpy(oData, reader->mData, tLength);
+	reader->mData += tLength;
+	reader->mLeft -= tLength;
+}
+
+// An 8-bit (or less) paletted PNG's indices, one byte each, tBytesPerLine a row.
+static int decodeN3DSWorkerPNG8(const uint8_t* tData, size_t tLength, int tBytesPerLine, int tHeight, std::vector<uint8_t>& oImage) {
+	std::vector<png_bytep> rows;
+	std::vector<uint8_t> decoded;
+	png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+	if (!png) return 0;
+	png_infop info = png_create_info_struct(png);
+	if (!info) {
+		png_destroy_read_struct(&png, NULL, NULL);
+		return 0;
+	}
+	if (setjmp(png_jmpbuf(png))) {
+		png_destroy_read_struct(&png, &info, NULL);
+		return 0;
+	}
+	N3DSPNGMemoryReader reader = { tData, tLength };
+	png_set_read_fn(png, &reader, readN3DSWorkerPNG);
+	png_read_info(png, info);
+	png_uint_32 width = 0, height = 0;
+	int bitDepth = 0, colorType = -1;
+	png_get_IHDR(png, info, &width, &height, &bitDepth, &colorType, NULL, NULL, NULL);
+	if ((colorType != PNG_COLOR_TYPE_PALETTE && colorType != PNG_COLOR_TYPE_GRAY) || bitDepth > 8 || !width || !height) {
+		png_destroy_read_struct(&png, &info, NULL);
+		return 0;
+	}
+	if (bitDepth < 8) png_set_packing(png);
+	png_set_interlace_handling(png);
+	png_read_update_info(png, info);
+	decoded.assign(size_t(width) * height, 0);
+	rows.resize(height);
+	for (png_uint_32 y = 0; y < height; y++) rows[y] = decoded.data() + size_t(y) * width;
+	png_read_image(png, rows.data());
+	png_destroy_read_struct(&png, &info, NULL);
+
+	oImage.assign(size_t(tBytesPerLine) * tHeight, 0);
+	const int rowsCopied = std::min<int>(tHeight, int(height));
+	const int rowLength = std::min<int>(tBytesPerLine, int(width));
+	for (int y = 0; y < rowsCopied; y++) memcpy(oImage.data() + size_t(y) * tBytesPerLine, decoded.data() + size_t(y) * width, rowLength);
+	return 1;
+}
+
+// The sprite whole (tBytesPerLine * tHeight indices), from its file.
+static int loadN3DSStreamOnWorker(const N3DSStreamRequest& tRequest, std::vector<uint8_t>& oImage) {
+	char path[1024];
+	getFullPath(path, tRequest.mPath->c_str());
+	FILE* file = fopen(path, "rb");
+	if (!file) return 0;
+	std::vector<uint8_t> data(size_t(tRequest.mLength) + 16, 0);
+	const int isRead = !fseek(file, long(tRequest.mOffset), SEEK_SET) && fread(data.data(), 1, tRequest.mLength, file) == tRequest.mLength;
+	fclose(file);
+	if (!isRead) return 0;
+
+	const size_t size = size_t(tRequest.mBytesPerLine) * tRequest.mHeight;
+	const uint8_t* input = data.data();
+	switch (tRequest.mKind) {
+	case N3DS_STREAM_RAW:
+		oImage.assign(input, input + std::min<size_t>(size, tRequest.mLength));
+		oImage.resize(size, 0);
+		return 1;
+	case N3DS_STREAM_PCX: {
+		if (tRequest.mLength <= sizeof(PCXHeader)) return 0;
+		oImage.assign(size, 0);
+		size_t op = 0;
+		for (size_t ip = sizeof(PCXHeader); ip < tRequest.mLength && op < size; ip++) {
+			const uint8_t cur = input[ip];
+			if ((cur & 0xC0) == 0xC0) {
+				if (++ip >= tRequest.mLength) break;
+				const size_t amount = std::min<size_t>(cur & 0x3F, size - op);
+				memset(oImage.data() + op, input[ip], amount);
+				op += amount;
+			}
+			else oImage[op++] = cur;
+		}
+		return 1;
+	}
+	case N3DS_STREAM_RLE8: {
+		if (tRequest.mLength < 4) return 0;
+		oImage.assign(size, 0);
+		size_t op = 0;
+		for (size_t ip = 4; ip < tRequest.mLength && op < size;) {
+			if ((input[ip] & 0xC0) == 0x40) {
+				if (ip + 1 >= tRequest.mLength) break;
+				const size_t amount = std::min<size_t>(input[ip] & 0x3F, size - op);
+				memset(oImage.data() + op, input[ip + 1], amount);
+				op += amount;
+				ip += 2;
+			}
+			else oImage[op++] = input[ip++];
+		}
+		return 1;
+	}
+	case N3DS_STREAM_PNG8:
+		return decodeN3DSWorkerPNG8(input, tRequest.mLength, tRequest.mBytesPerLine, tRequest.mHeight, oImage);
+	}
+	return 0;
+}
+
+static void runN3DSStreamWorker(void*) {
+	for (;;) {
+		N3DSStreamRequest request;
+		{
+			std::unique_lock<std::mutex> lock(gN3DSWorker.mMutex);
+			gN3DSWorker.mCondition.wait(lock, [] { return gN3DSWorker.mState == N3DS_WORKER_ASKED; });
+			gN3DSWorker.mState = N3DS_WORKER_WORKING;
+			request = gN3DSWorker.mRequest;
+		}
+		std::vector<uint8_t> image;
+		int isValid = 0;
+		try {
+			isValid = loadN3DSStreamOnWorker(request, image);
+		}
+		catch (const std::bad_alloc&) {
+			std::vector<uint8_t>().swap(image);
+		}
+		{
+			std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
+			gN3DSWorker.mResult.swap(image);
+			gN3DSWorker.mIsResultValid = isValid;
+			gN3DSWorker.mState = N3DS_WORKER_DONE;
+		}
+	}
+}
+
+#ifdef __3DS__
+static void runN3DSStreamWorkerThread(void* tCaller) { runN3DSStreamWorker(tCaller); }
+#endif
+
+static void startN3DSStreamWorker() {
+	if (gN3DSWorker.mIsStarted) return;
+	gN3DSWorker.mIsStarted = 1;
+#if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+	if (getenv("N3DS_SIM_SYNC_STREAMS")) return;   // as before: read on the game's thread
+#endif
+#ifdef __3DS__
+	// The other core (the New 3DS's third), at a priority under the game's;
+	// else on the game's own, when it waits for the screen.
+	s32 priority = 0x30;
+	svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+	Thread thread = threadCreate(runN3DSStreamWorkerThread, NULL, 64 * 1024, priority + 1, 2, true);
+	if (!thread) thread = threadCreate(runN3DSStreamWorkerThread, NULL, 64 * 1024, priority + 1, -2, true);
+	gN3DSWorker.mIsAvailable = thread != NULL;
+#else
+	std::thread(runN3DSStreamWorker, nullptr).detach();
+	gN3DSWorker.mIsAvailable = 1;
+#endif
+}
+
+// A sprite read on the other core and not taken yet, let go (the heap is short).
+static void dropN3DSStreamWorkerResult() {
+	if (!gN3DSWorker.mIsAvailable) return;
+	std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
+	if (gN3DSWorker.mState != N3DS_WORKER_DONE) return;
+	std::vector<uint8_t>().swap(gN3DSWorker.mResult);
+	gN3DSWorker.mState = N3DS_WORKER_IDLE;
+}
+
+// Waits for the sprite being read on the other core, then forgets it.
+static void forgetN3DSStreamWorkerResult() {
+	if (!gN3DSWorker.mIsAvailable) return;
+	for (;;) {
+		{
+			std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
+			if (gN3DSWorker.mState != N3DS_WORKER_ASKED && gN3DSWorker.mState != N3DS_WORKER_WORKING) {
+				std::vector<uint8_t>().swap(gN3DSWorker.mResult);
+				gN3DSWorker.mState = N3DS_WORKER_IDLE;
+				return;
+			}
+		}
+#ifdef __3DS__
+		svcSleepThread(1000000);
+#else
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#endif
+	}
+}
+
+static int loadN3DSSpriteStream(N3DSTextureStream* tStream, unsigned char* oIndices, int tWidth, int tHeight) {
 	N3DSSpriteStream* e = (N3DSSpriteStream*)tStream;
 	if (!gN3DSStreamCache.mImage.empty() && gN3DSStreamCache.mPath == e->mPath && gN3DSStreamCache.mOffset == e->mOffset) {
 		copyN3DSStreamPiece(e, makeBuffer(gN3DSStreamCache.mImage.data(), uint32_t(gN3DSStreamCache.mImage.size())), oIndices, tWidth, tHeight);
-		return;
+		return N3DS_STREAM_LOADED;
 	}
+
+	startN3DSStreamWorker();
+	const int isOnWorker = gN3DSWorker.mIsAvailable && isN3DSStreamKindOnWorker(e->mKind);
+	if (isOnWorker) {
+		std::unique_lock<std::mutex> lock(gN3DSWorker.mMutex);
+		if (gN3DSWorker.mState == N3DS_WORKER_DONE) {
+			const int isThisOne = gN3DSWorker.mRequest.mPath == e->mPath && gN3DSWorker.mRequest.mOffset == e->mOffset;
+			const int isValid = gN3DSWorker.mIsResultValid;
+			std::vector<uint8_t> result;
+			result.swap(gN3DSWorker.mResult);
+			gN3DSWorker.mState = N3DS_WORKER_IDLE;
+			lock.unlock();
+			if (isThisOne) {
+				if (!isValid) return N3DS_STREAM_FAILED;
+				gN3DSStreamCache.mImage.swap(result);
+				gN3DSStreamCache.mPath = e->mPath;
+				gN3DSStreamCache.mOffset = e->mOffset;
+				copyN3DSStreamPiece(e, makeBuffer(gN3DSStreamCache.mImage.data(), uint32_t(gN3DSStreamCache.mImage.size())), oIndices, tWidth, tHeight);
+				return N3DS_STREAM_LOADED;
+			}
+			lock.lock();
+		}
+		if (gN3DSWorker.mState != N3DS_WORKER_IDLE) return N3DS_STREAM_PENDING;   // busy with this one or another
+		// With room for it whole (the file's data, the image, and more).
+		const size_t need = size_t(e->mBytesPerLine) * e->mHeight * 2 + e->mLength + 768 * 1024;
+		lock.unlock();
+		if (getN3DSHeapFree() < need) {
+			letN3DSStreamedPixelsGo(need - getN3DSHeapFree());
+			if (getN3DSHeapFree() < need) return N3DS_STREAM_FAILED;
+		}
+		lock.lock();
+		gN3DSWorker.mRequest = { e->mPath, e->mOffset, e->mLength, e->mKind, e->mBytesPerLine, e->mHeight };
+		gN3DSWorker.mState = N3DS_WORKER_ASKED;
+		lock.unlock();
+		gN3DSWorker.mCondition.notify_one();
+		return N3DS_STREAM_PENDING;
+	}
+
 	letN3DSStreamCacheGo();
 	// The whole sprite, read and decoded, with room left: else not drawn
 	// this time (out of heap in a fight is the game's end).
 	const size_t need = size_t(e->mBytesPerLine) * e->mHeight + e->mLength + 768 * 1024;
 	if (getN3DSHeapFree() < need) {
 		letN3DSStreamedPixelsGo(need - getN3DSHeapFree());
-		if (getN3DSHeapFree() < need) return;
+		if (getN3DSHeapFree() < need) return N3DS_STREAM_FAILED;
 	}
 	gIsLoadingN3DSStream = 1;
 	loadN3DSSpriteStreamUnguarded(e, oIndices, tWidth, tHeight);
 	gIsLoadingN3DSStream = 0;
+	return N3DS_STREAM_LOADED;
 }
 
 static void copyN3DSStreamPiece(const N3DSSpriteStream* e, const Buffer& tImage, unsigned char* oIndices, int tWidth, int tHeight) {
@@ -1066,6 +1344,7 @@ static void loadN3DSSpriteStreamUnguarded(N3DSSpriteStream* e, unsigned char* oI
 static void freeN3DSSpriteStream(N3DSTextureStream* tStream) {
 	free(tStream);
 	if (gN3DSLiveStreams && --gN3DSLiveStreams) return;
+	forgetN3DSStreamWorkerResult();
 	letN3DSStreamedPixelsGo(0);
 	letN3DSStreamCacheGo();
 	for (auto& open : gN3DSStreamFiles) {

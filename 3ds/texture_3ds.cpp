@@ -474,7 +474,11 @@ namespace prism {
 		std::vector<unsigned char> indices;
 		indices.swap(gStreamScratch);
 		indices.assign((size_t)tWidth * tHeight, 0);
-		tTexture->mStream->mLoad(tTexture->mStream, indices.data(), tWidth, tHeight);
+		const int loaded = tTexture->mStream->mLoad(tTexture->mStream, indices.data(), tWidth, tHeight);
+		if (loaded != N3DS_STREAM_LOADED) {
+			indices.swap(gStreamScratch);
+			return loaded;
+		}
 		tTexture->mIndexed = compressIndices(indices.data(), tWidth * tHeight, &tTexture->mIndexedSize);
 		indices.swap(gStreamScratch);
 		if (!tTexture->mIndexed) return 0;
@@ -588,7 +592,9 @@ namespace prism {
 		if (texture->mStream) gStreamedInUse = texture;
 		if (!texture->mIndexed) {
 			if (!texture->mStream) return;
-			if (!loadStreamedPixels(texture, tTexture.mTextureSize.x, tTexture.mTextureSize.y)) {
+			const int loaded = loadStreamedPixels(texture, tTexture.mTextureSize.x, tTexture.mTextureSize.y);
+			if (loaded == N3DS_STREAM_PENDING) return;   // being read on the other core
+			if (loaded != N3DS_STREAM_LOADED) {
 				logWarning("Out of heap memory: a streamed sprite not drawn.");
 				return;
 			}

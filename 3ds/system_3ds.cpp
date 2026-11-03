@@ -63,6 +63,9 @@ namespace prism {
 	// A C++ allocation with no room: the streamed sprites' pixels go (read
 	// again when drawn), then it is tried again; with none, std::bad_alloc.
 	static void newHandlerN3DS() {
+		// Not from another thread (the streamed sprites' reader): the game's
+		// data is the game's thread's.
+		if (threadGetCurrent() != NULL) throw std::bad_alloc();
 		if (!letN3DSStreamedPixelsGo(0)) throw std::bad_alloc();
 	}
 

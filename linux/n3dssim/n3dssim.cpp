@@ -35,7 +35,8 @@ extern "C" {
 	void* __libc_realloc(void*, size_t);
 	void* __libc_memalign(size_t, size_t);
 }
-static size_t gHeapUsed = 0;
+#include <atomic>
+static std::atomic<size_t> gHeapUsed(0);   // the streamed sprites' reader allocates too
 static int gHeapLimitState = -1;   // -1 not looked at yet, 0 none, 1 limited
 static size_t gHeapLimit = 0;
 
@@ -81,7 +82,7 @@ extern "C" {
 	struct mallinfo mallinfo(void) noexcept {
 		struct mallinfo ret;
 		memset(&ret, 0, sizeof(ret));
-		ret.uordblks = (int)gHeapUsed;
+		ret.uordblks = (int)gHeapUsed.load();
 		return ret;
 	}
 }
