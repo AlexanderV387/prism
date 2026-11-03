@@ -21,6 +21,7 @@ namespace prism {
 	// Makes the texture's texels current (a paletted one, with its palette;
 	// made first if they were let go or had no room when loaded).
 	void prepareN3DSTexture(const TextureData& tTexture);
+	int isN3DSTextureDrawable(const TextureData& tTexture);
 
 	// A paletted texture with its own palette (RGBA8 colors, a sprite's own
 	// in its SFF): kept and made again as prism's paletted ones, at half the

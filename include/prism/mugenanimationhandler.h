@@ -34,6 +34,7 @@ struct MugenAnimationHandlerElement {
 	MugenDuration mStepTime;
 	MugenSpriteFileSprite* mSprite;
 	int mHasSprite;
+	MugenSpriteFileSprite* mLastDrawnSprite;   // [3DS] the last one ready to draw
 
 	int mHasPassiveHitCB;
 	void* mPassiveHitCaller;

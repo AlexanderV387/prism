@@ -700,6 +700,15 @@ namespace prism {
 		return ret;
 	}
 
+	// Whether it can be drawn now (made ready if it can be): a streamed one
+	// being read on the other core cannot.
+	void prepareN3DSTexture(const TextureData& tTexture);
+	int isN3DSTextureDrawable(const TextureData& tTexture) {
+		if (!tTexture.mHasPalette) return 1;
+		prepareN3DSTexture(tTexture);
+		return ((Texture)tTexture.mTexture->mData)->mIsInitialized;
+	}
+
 	void prepareN3DSTexture(const TextureData& tTexture) {
 		if (!tTexture.mHasPalette) return;
 

@@ -331,6 +331,8 @@ MugenAnimationHandlerElement* addMugenAnimation(MugenAnimation* tStartAnimation,
 	e.mOverallTime = 0;
 	e.mStepTime = 0;
 	e.mHasSprite = 0;
+	e.mSprite = NULL;
+	e.mLastDrawnSprite = NULL;
 
 	e.mHasPassiveHitCB = 0;
 	e.mHasAttackHitCB = 0;
@@ -625,6 +627,7 @@ void setMugenAnimationBlendType(MugenAnimationHandlerElement* e, BlendType tBlen
 void setMugenAnimationSprites(MugenAnimationHandlerElement* e, MugenSpriteFile * tSprites)
 {
 	e->mSprites = tSprites;
+	e->mLastDrawnSprite = NULL;
 	updateStepSpriteAndSpriteValidity(e);
 }
 
@@ -1273,6 +1276,30 @@ static void drawSingleAnimationDebugCollisionHitboxes(MugenAnimationHandlerEleme
 	stl_list_map(e->mActiveHitboxes, drawSingleAnimationSingleDebugCollisionHitbox, &caller);
 }
 
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+int isN3DSTextureDrawable(const TextureData& tTexture);
+
+static int isMugenSpriteDrawableNow(MugenSpriteFileSprite* tSprite) {
+	for (auto& texture : tSprite->mTextures) {
+		if (!isN3DSTextureDrawable(texture.mTexture)) return 0;
+	}
+	return 1;
+}
+
+// [3DS] A sprite read from the card when drawn is not there for a frame or
+// a few (read on the other core): the animation's last one ready is drawn
+// meanwhile instead of nothing (New Kyouki's big effects and the other
+// player, all read from the card, flickered).
+static MugenSpriteFileSprite* findMugenSpriteToDraw(MugenAnimationHandlerElement* e) {
+	if (isMugenSpriteDrawableNow(e->mSprite)) {
+		e->mLastDrawnSprite = e->mSprite;
+		return e->mSprite;
+	}
+	if (e->mLastDrawnSprite && e->mLastDrawnSprite != e->mSprite && isMugenSpriteDrawableNow(e->mLastDrawnSprite)) return e->mLastDrawnSprite;
+	return e->mSprite;
+}
+#endif
+
 static void drawSingleMugenAnimation(void* tCaller, MugenAnimationHandlerElement& tData) {
 	(void)tCaller;
 	setProfilingSectionMarkerCurrentFunction();
@@ -1298,6 +1325,11 @@ static void drawSingleMugenAnimation(void* tCaller, MugenAnimationHandlerElement
 
 	MugenAnimationStep* step = getCurrentAnimationStep(e);
 	if (!step) return;
+
+	MugenSpriteFileSprite* const currentSprite = e->mSprite;
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+	e->mSprite = findMugenSpriteToDraw(e);
+#endif
 
 	Vector2D drawScale = e->mBaseDrawScale * e->mDrawScale;
 	if (e->mHasScaleReference) {
@@ -1395,6 +1427,7 @@ static void drawSingleMugenAnimation(void* tCaller, MugenAnimationHandlerElement
 	{
 		drawSingleMugenAnimationSprite(texture, caller);
 	}
+	e->mSprite = currentSprite;
 }
 
 static void drawMugenAnimationHandler(void* tData) {

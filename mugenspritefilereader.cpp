@@ -1357,6 +1357,22 @@ static void copyN3DSStreamPiece(const N3DSSpriteStream* e, const Buffer& tImage,
 	}
 }
 
+// Whether tAmount pieces of tSize bytes can be had from the heap at once.
+static int hasN3DSHeapRoomInOnePiece(size_t tSize, int tAmount) {
+	void* pieces[2] = { NULL, NULL };
+	int isRoom = 1;
+	for (int i = 0; i < tAmount && i < 2; i++) {
+		pieces[i] = malloc(tSize);
+		if (!pieces[i]) {
+			isRoom = 0;
+			break;
+		}
+	}
+	free(pieces[0]);
+	free(pieces[1]);
+	return isRoom;
+}
+
 // Read and decoded here, on the game's core: kept whole as the last one
 // read (its pieces copied from there); 0 if it could not be.
 static int loadN3DSSpriteStreamUnguarded(N3DSSpriteStream* e) {
@@ -1375,6 +1391,14 @@ static int loadN3DSSpriteStreamUnguarded(N3DSSpriteStream* e) {
 	uint8_t* data = gN3DSStreamData.data();
 
 	const uint32_t size = uint32_t(e->mBytesPerLine) * e->mHeight;
+	// Room for it in one piece, twice (decoded, then kept): the heap can have
+	// it in all but only in pieces (New Kyouki against himself stopped on a
+	// 200 KB sprite with 2 MB free); without it, not drawn this time rather
+	// than the game's end.
+	if (!hasN3DSHeapRoomInOnePiece(size_t(size) + 64, 2)) {
+		letN3DSStreamedPixelsGo(0);
+		if (!hasN3DSHeapRoomInOnePiece(size_t(size) + 64, 2)) return 0;
+	}
 	Buffer image = makeBuffer(NULL, 0);
 	switch (e->mKind) {
 	case N3DS_STREAM_PCX:
