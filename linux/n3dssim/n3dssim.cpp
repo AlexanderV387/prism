@@ -15,6 +15,9 @@
 #include "prism/drawing.h"
 #include "prism/log.h"
 #include "prism/memoryhandler.h"
+#include "prism/math.h"
+#include "prism/system.h"
+#include <math.h>
 #include "../../3ds/prism3ds.h"
 #include "../../3ds/prism3dsperf.h"
 
@@ -278,6 +281,53 @@ namespace prism {
 		if (bad && gSim.mMismatches++ < 10) fprintf(stderr, "n3dssim: texture %p (%dx%d, palette %d) texels differ from its indices\n", (void*)texture, w, h, id);
 	}
 
+	// ==================================================================
+	// Pictures of chosen frames (N3DS_SIM_SHOT="frame,frame,...", into
+	// N3DS_SIM_SHOT_DIR, PPM): the sprites drawn as drawing_3ds.cpp draws
+	// them (its transform, colors and blending), on a 400x240 top screen.
+	struct SimDrawData {
+		float r, g, b, a, rOffset, gOffset, bOffset;
+		Matrix4D mMatrix;
+		BlendType mBlendType;
+		int mIsColorSolid, mIsColorInversed;
+		float mDestAlpha;
+	};
+	static SimDrawData gDraw;
+	static int gIsDrawingDisabled;
+	struct SimSprite {
+		TextureData mTexture;
+		Position2D mTopLeft, mTopRight, mBottomLeft, mBottomRight;
+		PrismRectangle mTexturePosition;
+		SimDrawData mData;
+		float mZ;
+		bool operator<(const SimSprite& o) const { return mZ < o.mZ; }
+	};
+	static std::multiset<SimSprite> gSimList;
+	static const int SHOT_W = 400, SHOT_H = 240;
+
+	static int isShotFrame(unsigned long tFrame) {
+		static std::set<unsigned long>* frames = NULL;
+		if (!frames) {
+			frames = new std::set<unsigned long>();
+			const char* q = getenv("N3DS_SIM_SHOT");
+			while (q && *q) { frames->insert(strtoul(q, (char**)&q, 10)); while (*q == ',' || *q == ' ') q++; }
+		}
+		return frames->count(tFrame) > 0;
+	}
+
+	static void simDrawingIdentity() {
+		gDraw.r = gDraw.g = gDraw.b = gDraw.a = 1;
+		gDraw.rOffset = gDraw.gOffset = gDraw.bOffset = 0;
+		gDraw.mBlendType = BLEND_TYPE_NORMAL;
+		gDraw.mIsColorSolid = gDraw.mIsColorInversed = 0;
+		gDraw.mDestAlpha = 1;
+		const ScreenSize sz = getScreenSize();
+		const float scale = fminf(400 / (float)sz.x, SHOT_H / (float)sz.y);
+		gDraw.mMatrix = makeIdentityMatrix4D();
+		gDraw.mMatrix = matMult4D(gDraw.mMatrix, createTranslationMatrix4D(Vector3D(floorf((SHOT_W - sz.x * scale) / 2), floorf((SHOT_H - sz.y * scale) / 2), 0)));
+		gDraw.mMatrix = matMult4D(gDraw.mMatrix, createScaleMatrix4D(Vector3D(scale, scale, 1)));
+	}
+
 	static void drawSimulated(const TextureData& tTexture) {
 		gSim.mDraws++;
 		prepareN3DSTexture(tTexture);
@@ -290,40 +340,160 @@ namespace prism {
 			gN3DSPerf.mDeferredTextures, gN3DSPerf.mLateTextures, gN3DSPerf.mEvictedTextures, gN3DSPerf.mRepaletted);
 	}
 
-	void initDrawing() { for (int i = 0; i < 4; i++) gN3DSPaletteVersions[i] = 0; }
+	void initDrawing() { for (int i = 0; i < 4; i++) gN3DSPaletteVersions[i] = 0; simDrawingIdentity(); }
 
-	void drawSprite(const TextureData& tTexture, const Position&, const PrismRectangle&) { drawSimulated(tTexture); }
-	void drawSpriteNoRectangle(const TextureData& tTexture, const Position&, const Position&, const Position&, const Position&, const PrismRectangle&) { drawSimulated(tTexture); }
+	void drawSpriteNoRectangle(const TextureData& tTexture, const Position& tTopLeft, const Position& tTopRight, const Position& tBottomLeft, const Position& tBottomRight, const PrismRectangle& tTexturePosition) {
+		if (gIsDrawingDisabled) return;
+		drawSimulated(tTexture);
+		if (!isShotFrame(gSim.mFrames)) return;
+		SimSprite e;
+		e.mTexture = tTexture;
+		e.mTopLeft = tTopLeft.xy(); e.mTopRight = tTopRight.xy(); e.mBottomLeft = tBottomLeft.xy(); e.mBottomRight = tBottomRight.xy();
+		e.mTexturePosition = tTexturePosition;
+		e.mData = gDraw;
+		e.mZ = tTopLeft.z;
+		gSimList.insert(e);
+	}
+
+	void drawSprite(const TextureData& tTexture, const Position& tPos, const PrismRectangle& tTexturePosition) {
+		const auto sizeX = abs(tTexturePosition.bottomRight.x - tTexturePosition.topLeft.x) + 1;
+		const auto sizeY = abs(tTexturePosition.bottomRight.y - tTexturePosition.topLeft.y) + 1;
+		drawSpriteNoRectangle(tTexture, tPos, Vector3D(tPos.x + sizeX, tPos.y, tPos.z), Vector3D(tPos.x, tPos.y + sizeY, tPos.z), Vector3D(tPos.x + sizeX, tPos.y + sizeY, tPos.z), tTexturePosition);
+	}
 	void drawMultilineText(const char*, const char*, const Position&, const Vector3D&, Color, const Vector3D&, const Vector3D&) {}
 	void drawTruetypeText(const char*, TruetypeFont, const Position&, const Vector3DI&, const Vector3D&, float, const GeoRectangle2D&) {}
 
+	static const u8 gMorton[64] = { 0,1,4,5,16,17,20,21, 2,3,6,7,18,19,22,23, 8,9,12,13,24,25,28,29, 10,11,14,15,26,27,30,31, 32,33,36,37,48,49,52,53, 34,35,38,39,50,51,54,55, 40,41,44,45,56,57,60,61, 42,43,46,47,58,59,62,63 };
+
+	static void sampleTexel(const C3D_Tex& t, int x, int y, float* rgba) {
+		if (x < 0) x = 0; if (y < 0) y = 0; if (x >= t.width) x = t.width - 1; if (y >= t.height) y = t.height - 1;
+		const int flipped = t.height - 1 - y;
+		const u32 index = (flipped >> 3) * (t.width >> 3) * 64 + ((x >> 3) << 6) + gMorton[(flipped & 7) * 8 + (x & 7)];
+		if (t.fmt == GPU_RGBA8) {
+			const u32 c = ((const u32*)t.data)[index];
+			rgba[0] = (c >> 24) / 255.0f; rgba[1] = ((c >> 16) & 255) / 255.0f; rgba[2] = ((c >> 8) & 255) / 255.0f; rgba[3] = (c & 255) / 255.0f;
+		}
+		else if (t.fmt == GPU_RGBA4) {
+			const u16 c = ((const u16*)t.data)[index];
+			rgba[0] = (c >> 12) / 15.0f; rgba[1] = ((c >> 8) & 15) / 15.0f; rgba[2] = ((c >> 4) & 15) / 15.0f; rgba[3] = (c & 15) / 15.0f;
+		}
+		else {
+			const u16 c = ((const u16*)t.data)[index];
+			rgba[0] = (c >> 11) / 31.0f; rgba[1] = ((c >> 6) & 31) / 31.0f; rgba[2] = ((c >> 1) & 31) / 31.0f; rgba[3] = (float)(c & 1);
+		}
+	}
+
+	static float clamp01(float v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
+
+	static void rasterTriangle(float* fb, const SimSprite& e, const C3D_Tex& t, const float px[3], const float py[3], const float pu[3], const float pv[3]) {
+		const float area = (px[1] - px[0]) * (py[2] - py[0]) - (px[2] - px[0]) * (py[1] - py[0]);
+		if (fabsf(area) < 1e-6f) return;
+		int x0 = (int)floorf(fminf(px[0], fminf(px[1], px[2]))), x1 = (int)ceilf(fmaxf(px[0], fmaxf(px[1], px[2])));
+		int y0 = (int)floorf(fminf(py[0], fminf(py[1], py[2]))), y1 = (int)ceilf(fmaxf(py[0], fmaxf(py[1], py[2])));
+		if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 > SHOT_W) x1 = SHOT_W; if (y1 > SHOT_H) y1 = SHOT_H;
+		const SimDrawData& d = e.mData;
+		for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+			const float cx = x + 0.5f, cy = y + 0.5f;
+			const float w0 = ((px[1] - cx) * (py[2] - cy) - (px[2] - cx) * (py[1] - cy)) / area;
+			const float w1 = ((px[2] - cx) * (py[0] - cy) - (px[0] - cx) * (py[2] - cy)) / area;
+			const float w2 = 1 - w0 - w1;
+			if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+			const float u = w0 * pu[0] + w1 * pu[1] + w2 * pu[2], v = w0 * pv[0] + w1 * pv[1] + w2 * pv[2];
+			float tex[4];
+			sampleTexel(t, (int)floorf(u * t.width), (int)floorf(v * t.height), tex);
+			float c[3], alpha = tex[3] * clamp01(d.a);
+			if (d.mBlendType != BLEND_TYPE_ONE && tex[3] <= 0) continue;
+			if (d.mIsColorSolid) { c[0] = clamp01(d.r); c[1] = clamp01(d.g); c[2] = clamp01(d.b); }
+			else {
+				const float mul[3] = { clamp01(d.r), clamp01(d.g), clamp01(d.b) }, off[3] = { d.rOffset, d.gOffset, d.bOffset };
+				for (int i = 0; i < 3; i++) c[i] = clamp01((d.mIsColorInversed ? 1 - tex[i] : tex[i]) * mul[i] + off[i]);
+			}
+			float* o = fb + (y * SHOT_W + x) * 3;
+			for (int i = 0; i < 3; i++) {
+				if (d.mBlendType == BLEND_TYPE_ADDITION) o[i] = clamp01(c[i] * alpha + o[i] * clamp01(d.mDestAlpha));
+				else if (d.mBlendType == BLEND_TYPE_SUBTRACTION) o[i] = clamp01(o[i] * clamp01(d.mDestAlpha) - c[i] * alpha);
+				else if (d.mBlendType == BLEND_TYPE_ONE) o[i] = c[i];
+				else o[i] = c[i] * alpha + o[i] * (1 - alpha);
+			}
+		}
+	}
+
+	static void writeShot() {
+		std::vector<float> fb(SHOT_W * SHOT_H * 3, 0.0f);
+		for (const auto& e : gSimList) {
+			Texture texture = (Texture)e.mTexture.mTexture->mData;
+			prepareN3DSTexture(e.mTexture);
+			if (!texture->mIsInitialized || !texture->mTex.data) continue;
+			const C3D_Tex& t = texture->mTex;
+			const float tw = t.width, th = t.height;
+			const PrismRectangle& r = e.mTexturePosition;
+			float u1, u2, v1, v2;
+			if (r.topLeft.x < r.bottomRight.x) { u1 = r.topLeft.x / tw; u2 = (r.bottomRight.x + 1) / tw; } else { u1 = (r.topLeft.x + 1) / tw; u2 = r.bottomRight.x / tw; }
+			if (r.topLeft.y < r.bottomRight.y) { v1 = r.topLeft.y / th; v2 = (r.bottomRight.y + 1) / th; } else { v1 = (r.topLeft.y + 1) / th; v2 = r.bottomRight.y / th; }
+			Position p[4];
+			const Position2D corners[4] = { e.mTopLeft, e.mBottomLeft, e.mTopRight, e.mBottomRight };
+			for (int i = 0; i < 4; i++) { p[i] = rotateScaleTranslatePositionByMatrix4D(e.mData.mMatrix, corners[i].xyz(0)); p[i].x = floorf(p[i].x); p[i].y = floorf(p[i].y); }
+			const float ax[3] = { (float)p[0].x, (float)p[1].x, (float)p[2].x }, ay[3] = { (float)p[0].y, (float)p[1].y, (float)p[2].y };
+			const float au[3] = { u1, u1, u2 }, av[3] = { v1, v2, v1 };
+			rasterTriangle(fb.data(), e, t, ax, ay, au, av);
+			const float bx[3] = { (float)p[2].x, (float)p[1].x, (float)p[3].x }, by[3] = { (float)p[2].y, (float)p[1].y, (float)p[3].y };
+			const float bu[3] = { u2, u1, u2 }, bv[3] = { v1, v2, v2 };
+			rasterTriangle(fb.data(), e, t, bx, by, bu, bv);
+			if (getenv("N3DS_SIM_SHOT_LIST")) fprintf(stderr, "n3dssim: sprite z %.1f tex %dx%d at (%.0f,%.0f)-(%.0f,%.0f) rect (%.0f,%.0f)-(%.0f,%.0f) blend %d a %.2f dst %.2f solid %d rgb %.2f,%.2f,%.2f off %.2f,%.2f,%.2f\n", e.mZ, e.mTexture.mTextureSize.x, e.mTexture.mTextureSize.y, (double)p[0].x, (double)p[0].y, (double)p[3].x, (double)p[3].y, (double)r.topLeft.x, (double)r.topLeft.y, (double)r.bottomRight.x, (double)r.bottomRight.y, (int)e.mData.mBlendType, e.mData.a, e.mData.mDestAlpha, e.mData.mIsColorSolid, e.mData.r, e.mData.g, e.mData.b, e.mData.rOffset, e.mData.gOffset, e.mData.bOffset);
+		}
+		const char* dir = getenv("N3DS_SIM_SHOT_DIR");
+		char path[1024];
+		snprintf(path, sizeof(path), "%s/shot%05lu.ppm", dir ? dir : ".", gSim.mFrames);
+		FILE* f = fopen(path, "wb");
+		if (!f) return;
+		fprintf(f, "P6\n%d %d\n255\n", SHOT_W, SHOT_H);
+		for (size_t i = 0; i < fb.size(); i++) fputc((int)(fb[i] * 255 + 0.5f), f);
+		fclose(f);
+		fprintf(stderr, "n3dssim: picture %s (%zu sprites)\n", path, gSimList.size());
+	}
+
 	void waitForScreen() {}
-	void startDrawing() { gSim.mFrames++; advanceN3DSTextureFrame(); }
-	void stopDrawing() { issueN3DSTextureReadAhead(); }
+	void startDrawing() { gSim.mFrames++; advanceN3DSTextureFrame(); gSimList.clear(); }
+	void stopDrawing() {
+		if (isShotFrame(gSim.mFrames) && !gSimList.empty()) writeShot();
+		gSimList.clear();
+		issueN3DSTextureReadAhead();
+	}
 	void waitForRendering() {}
 
 	bool isSkippingDrawing() { return false; }
 	void setDrawingFrameSkippingEnabled(bool) {}
 	void resetDrawingFrameStartTime() {}
-	void disableDrawing() {}
-	void enableDrawing() {}
+	void disableDrawing() { gIsDrawingDisabled = 1; }
+	void enableDrawing() { gIsDrawingDisabled = 0; }
 
-	void scaleDrawing(float, const Position&) {}
-	void scaleDrawing2D(const Vector2D&, const Position2D&) {}
-	void scaleDrawing3D(const Vector3D&, const Position&) {}
+	void scaleDrawing(float tFactor, const Position& tScalePosition) { scaleDrawing3D(Vector3D(tFactor, tFactor, 1), tScalePosition); }
+	void scaleDrawing2D(const Vector2D& tFactor, const Position2D& tScalePosition) { scaleDrawing3D(tFactor.xyz(1.0), tScalePosition.xyz(0.0)); }
+	void scaleDrawing3D(const Vector3D& tFactor, const Position& tScalePosition) {
+		const auto p = Vector3D(tScalePosition.x, tScalePosition.y, 0);
+		gDraw.mMatrix = matMult4D(gDraw.mMatrix, createTranslationMatrix4D(p));
+		gDraw.mMatrix = matMult4D(gDraw.mMatrix, createScaleMatrix4D(Vector3D(tFactor.x, tFactor.y, tFactor.z)));
+		gDraw.mMatrix = matMult4D(gDraw.mMatrix, createTranslationMatrix4D(vecScale(p, -1)));
+	}
 
-	void setDrawingBaseColorOffsetAdvanced(float, float, float) {}
-	void setDrawingBaseColor(Color) {}
-	void setDrawingBaseColorAdvanced(float, float, float) {}
-	void setDrawingColorSolidity(int) {}
-	void setDrawingColorInversed(int) {}
+	void setDrawingBaseColorOffsetAdvanced(float r, float g, float b) { gDraw.rOffset = r; gDraw.gOffset = g; gDraw.bOffset = b; }
+	void setDrawingBaseColor(Color tColor) { getRGBFromColor(tColor, &gDraw.r, &gDraw.g, &gDraw.b); }
+	void setDrawingBaseColorAdvanced(float r, float g, float b) { gDraw.r = r; gDraw.g = g; gDraw.b = b; }
+	void setDrawingColorSolidity(int tIsSolid) { gDraw.mIsColorSolid = tIsSolid; }
+	void setDrawingColorInversed(int tIsInversed) { gDraw.mIsColorInversed = tIsInversed; }
 	void setDrawingColorFactor(float) {}
-	void setDrawingTransparency(float) {}
-	void setDrawingDestinationTransparency(float) {}
-	void setDrawingRotationZ(float, const Position2D&) {}
-	void setDrawingRotationZ(float, const Position&) {}
-	void setDrawingParametersToIdentity() {}
-	void setDrawingBlendType(BlendType) {}
+	void setDrawingTransparency(float tAlpha) { gDraw.a = tAlpha; }
+	void setDrawingDestinationTransparency(float tAlpha) { gDraw.mDestAlpha = tAlpha; }
+	void setDrawingRotationZ(float tAngle, const Position2D& tPosition) { setDrawingRotationZ(tAngle, tPosition.xyz(0.0)); }
+	void setDrawingRotationZ(float tAngle, const Position& tPosition) {
+		tAngle = (2 * M_PI - tAngle);
+		const auto p = Vector3D(tPosition.x, tPosition.y, 0);
+		gDraw.mMatrix = matMult4D(gDraw.mMatrix, createTranslationMatrix4D(p));
+		gDraw.mMatrix = matMult4D(gDraw.mMatrix, createRotationZMatrix4D(tAngle));
+		gDraw.mMatrix = matMult4D(gDraw.mMatrix, createTranslationMatrix4D(vecScale(p, -1)));
+	}
+	void setDrawingParametersToIdentity() { simDrawingIdentity(); }
+	void setDrawingBlendType(BlendType tBlendType) { gDraw.mBlendType = tBlendType; }
 
 	void setPaletteFromARGB256Buffer(int tPaletteID, const Buffer& tBuffer) {
 		const u8* src = (const u8*)tBuffer.mData;
