@@ -1870,7 +1870,8 @@ static void addN3DSPortraitCacheEntry(const MugenSpriteFile& tFile) {
 #endif
 
 static void logSingleSFFSubFile(const SFFSubFileHeader& tSubHeader) {
-	debugFormat("[MugenSpriteFileReader] sff sprite %d: group %d image %d length %d linkedTo %d", gLoadedSubFileAmount++, (int)tSubHeader.mGroup, (int)tSubHeader.mImage, (int)tSubHeader.mSubfileLength, (int)tSubHeader.mIndexOfPreciousSpriteCopy);
+	gLoadedSubFileAmount++;
+	debugFormat("[MugenSpriteFileReader] sff sprite %d: group %d image %d length %d linkedTo %d", gLoadedSubFileAmount - 1, (int)tSubHeader.mGroup, (int)tSubHeader.mImage, (int)tSubHeader.mSubfileLength, (int)tSubHeader.mIndexOfPreciousSpriteCopy);
 }
 
 static void loadSingleSFFFileAndInsertIntoSpriteFile(const SFFSubFileHeader& subHeader, MugenSpriteFile* tDst) {
@@ -2055,6 +2056,11 @@ static MugenSpriteFile loadMugenSpriteFile1(int tHasPaletteFile, const char* tOp
 	while (!gPrismMugenSpriteFileReaderData.mReader.mIsOver(&gPrismMugenSpriteFileReaderData.mReader)) {
 		loadSingleSFFFile(&ret);
 		if(gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && ret.mAllSprites.size() == 2) break;
+	}
+	// A file cut short (a copy to the SD card that did not finish): said in
+	// the logs, its missing sprites being nothing drawn.
+	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && gLoadedSubFileAmount < int(header.mImageAmount)) {
+		logWarningFormat("Sprite file cut short: %d of its %d sprites there. Copy it again.", gLoadedSubFileAmount, int(header.mImageAmount));
 	}
 
 #ifdef __3DS__
