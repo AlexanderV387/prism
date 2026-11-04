@@ -514,7 +514,12 @@ namespace prism {
 	// making room for them if needed.
 	// Linear memory kept free for the rest (sounds, music, other textures):
 	// more when loading, the textures drawn coming first.
-	static const size_t LOAD_RESERVE = 8 * 1024 * 1024;
+	static const size_t LOAD_RESERVE_DEFAULT = 8 * 1024 * 1024;
+	static size_t LOAD_RESERVE = LOAD_RESERVE_DEFAULT;
+	// More kept free while a file loads (the first fighter's sprites leave
+	// the second its share: Wonder Woman took 47 MB, Galactus got 4 KB and
+	// was drawn in pieces); 0 for the usual 8 MB.
+	void setN3DSTextureLoadReserve(size_t tReserve) { LOAD_RESERVE = tReserve > LOAD_RESERVE_DEFAULT ? tReserve : LOAD_RESERVE_DEFAULT; }
 	static const size_t DRAW_RESERVE = 3 * 1024 * 1024;
 
 	static int makePalettedTexels(Texture tTexture, int tWidth, int tHeight, int tIsEvicting) {
