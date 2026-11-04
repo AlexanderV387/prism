@@ -1,6 +1,7 @@
 #include "prism/memorystack.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <prism/memoryhandler.h>
 #include <prism/log.h>
@@ -9,6 +10,17 @@ namespace prism {
 
 	MemoryStack createMemoryStack(uint32_t tSize)
 	{
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+		// [3DS] The heap with plenty free but not in one piece (46 MB free,
+		// no 3 MB block, after many fights): a smaller stack, what does not
+		// fit going outside it, rather than the game's end.
+		while (tSize > 64 * 1024) {
+			void* probe = malloc(tSize + 1024);
+			if (probe) { free(probe); break; }
+			tSize /= 2;
+			logWarningFormat("Memory stack smaller: %u bytes, the heap in pieces.", (unsigned)tSize);
+		}
+#endif
 		MemoryStack ret;
 		ret.mAddress = allocMemory(tSize);
 		ret.mSize = tSize;
