@@ -250,6 +250,7 @@ namespace prism {
 		}
 		const int w = tTexture.mTextureSize.x, h = tTexture.mTextureSize.y;
 		unsigned char* indices = (unsigned char*)malloc(w * h);
+		if (!indices) return;   // the simulated heap full: not checked this time
 		const unsigned char* p = texture->mIndexed;
 		const unsigned char* end = p + texture->mIndexedSize;
 		int i = 0;
