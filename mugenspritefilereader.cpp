@@ -1674,6 +1674,14 @@ static void resetPCXBasePalette() {
 static uint32_t gN3DSPCXHeaderOnlyLength;
 #endif
 
+static int gN3DSPCXHeaderOnlyLengthOrZero() {
+#ifdef N3DS_HEAP_GUARD
+	return gN3DSPCXHeaderOnlyLength != 0;
+#else
+	return 0;
+#endif
+}
+
 static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int mIsUsingOwnPalette, const Buffer& b, const Vector2D& tAxisOffset) {
 	PCXHeader header;
 
@@ -1729,7 +1737,20 @@ static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int
 			gIsOnPCXBasePalette = tDst->mPalettes.size() == 1;
 		}
 	}
-	assert(!tDst->mPalettes.empty());
+	// No palette yet (the file's first sprite said "the previous one's",
+	// with no .act chosen for it: Harley Quinn's): the one at the end of
+	// its PCX if there, a gray one if not; not a crash.
+	if (tDst->mPalettes.empty()) {
+		logWarning("First sprite shares a palette there is none of yet: its own or a gray one used.");
+		char* data = (char*)allocMemory(256 * 3);
+		const uint8_t* bytes = (const uint8_t*)b.mData;
+		const int hasTrailingPalette = !gN3DSPCXHeaderOnlyLengthOrZero() && b.mLength >= (int)sizeof(PCXHeader) + 769 && bytes[b.mLength - 769] == 12;
+		if (hasTrailingPalette) memcpy(data, bytes + b.mLength - 768, 256 * 3);
+		else for (int i = 0; i < 256; i++) data[i * 3 + 0] = data[i * 3 + 1] = data[i * 3 + 2] = (char)i;
+		insertPaletteIntoMugenSpriteFile(tDst, makeBufferOwned(data, 256 * 3));
+		if (gPCXBasePalette.empty()) gPCXBasePalette.assign((const uint8_t*)data, (const uint8_t*)data + 256 * 3);
+		gIsOnPCXBasePalette = 1;
+	}
 
 #ifdef N3DS_HEAP_GUARD
 	if (gN3DSPCXHeaderOnlyLength || !hasN3DSHeapRoomForSprite((size_t)pcxImageSize * 3)) {
