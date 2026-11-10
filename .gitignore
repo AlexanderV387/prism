@@ -59,3 +59,5 @@ build_n3dssim/
 bin_n3dssim/
 build_n3dssim_fast/
 bin_n3dssim_fast/
+build_n3dssim_track/
+bin_n3dssim_track/
