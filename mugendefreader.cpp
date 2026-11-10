@@ -142,7 +142,11 @@ static void destroyMugenDefString(char* tVal) {
 
 
 static void moveBufferPointerForward(Buffer* b, BufferPointer* p) {
-	while (isEmpty(*p) && !isLinebreak(*p)) {
+	// Never past the buffer's end: a file ending in "key =" (Mileena's
+	// "ending.storyboard =") has nothing after its '=', and the byte after
+	// the buffer was read.
+	const BufferPointer end = ((char*)b->mData) + b->mLength;
+	while (*p < end && isEmpty(*p) && !isLinebreak(*p)) {
 		increaseAndCheckIfOver(b, p);
 	}
 }
