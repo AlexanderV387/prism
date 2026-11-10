@@ -364,9 +364,14 @@ namespace prism {
 		ndspChnSetMix(toDSPChannel(tChannel), mix);
 	}
 
+	// Playing, or queued and not started yet: the DSP reports a channel as
+	// playing only from its next frame, so two sounds on any free channel
+	// in the same tick (a KO voice and the announcer's "KO", a hit's sound
+	// and a voice) took the same channel, and the second cut the first.
 	int isSoundEffectPlayingOnChannel(int tChannel) {
 		if (!gN3DSSoundEffectData.mIsAvailable || tChannel < 1 || tChannel >= CHANNEL_AMOUNT) return 0;
-		return ndspChnIsPlaying(toDSPChannel(tChannel));
+		const u8 status = gN3DSSoundEffectData.mWaveBufs[tChannel].status;
+		return ndspChnIsPlaying(toDSPChannel(tChannel)) || status == NDSP_WBUF_QUEUED || status == NDSP_WBUF_PLAYING;
 	}
 
 	static int findEmptyChannel() {
@@ -434,6 +439,7 @@ namespace prism {
 	void stopSoundEffect(int tChannel) {
 		if (!gN3DSSoundEffectData.mIsAvailable || tChannel < 1 || tChannel >= CHANNEL_AMOUNT) return;
 		ndspChnWaveBufClear(toDSPChannel(tChannel));
+		gN3DSSoundEffectData.mWaveBufs[tChannel].status = NDSP_WBUF_DONE;
 		gN3DSSoundEffectData.mPlaying[tChannel] = NULL;
 	}
 
