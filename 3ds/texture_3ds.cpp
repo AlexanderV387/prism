@@ -365,6 +365,15 @@ namespace prism {
 	static std::unordered_map<Texture, std::pair<int, int>> gAllStreamed;
 	int gN3DSStreamsForceSync;
 
+	// For tests: textures holding a GPU texture, streamed ones, own palettes
+	// referenced and kept.
+	void getN3DSTextureCountsForTesting(size_t* oResident, size_t* oStreamed, int* oOwnPaletteReferences, size_t* oOwnPalettes) {
+		*oResident = gResidentTextures.size();
+		*oStreamed = gAllStreamed.size();
+		*oOwnPaletteReferences = gOwnPaletteReferences;
+		*oOwnPalettes = gOwnPalettes.size();
+	}
+
 	void forgetN3DSTexture(N3DSTextureData* tTexture) {
 		if (tTexture->mStream && gReadAheadCandidate == tTexture->mStream) gReadAheadCandidate = NULL;
 		if (gAllStreamed.erase(tTexture) && gAllStreamed.empty() && gAllStreamed.bucket_count() > 16) {
@@ -374,7 +383,15 @@ namespace prism {
 		if (gStreamedInUse == tTexture) gStreamedInUse = NULL;
 		gResidentTextures.erase(tTexture);
 		if (tTexture->mOwnPalette >= 0 && tTexture->mOwnPalette < (int)gOwnPalettes.size()) {
-			gOwnPalettes[tTexture->mOwnPalette].mReferences--;
+			const int index = tTexture->mOwnPalette;
+			// A palette no longer used leaves the index at once.
+			if (--gOwnPalettes[index].mReferences <= 0) {
+				gOwnPalettes[index].mReferences = 0;
+				const auto range = gOwnPaletteIndices.equal_range(hashColors(gOwnPalettes[index].mColors));
+				for (auto it = range.first; it != range.second; ++it) {
+					if (it->second == index) { gOwnPaletteIndices.erase(it); break; }
+				}
+			}
 			// The last one gone (a fight's end): the tables let go whole. Made
 			// in a fight's loading, high in a full heap, they stayed there
 			// between fights (New Kyouki's 1200 palettes: 2 MB), the next
@@ -384,8 +401,19 @@ namespace prism {
 				std::vector<OwnPalette>().swap(gOwnPalettes);
 				std::unordered_multimap<uint32_t, int>().swap(gOwnPaletteIndices);
 			}
+			else {
+				// Some still used (the system fonts' own, for good): the unused
+				// end cut and the room given back, or the 423 palettes of a
+				// fight against Felicia stayed in the heap's middle after it,
+				// and three fights later a 3 MB block could not be had.
+				while (!gOwnPalettes.empty() && !gOwnPalettes.back().mReferences) gOwnPalettes.pop_back();
+				if (gOwnPalettes.capacity() > 2 * gOwnPalettes.size() + 8) std::vector<OwnPalette>(gOwnPalettes).swap(gOwnPalettes);
+				if (gOwnPaletteIndices.bucket_count() > 4 * gOwnPaletteIndices.size() + 16) gOwnPaletteIndices.rehash(0);
+			}
 			tTexture->mOwnPalette = -1;
 		}
+		// The tables of textures given back their room when nearly empty.
+		if (gResidentTextures.bucket_count() > 4 * gResidentTextures.size() + 16) gResidentTextures.rehash(0);
 	}
 
 	static u16 toRGBA5551(u32 tRGBA) {

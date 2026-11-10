@@ -62,7 +62,7 @@ static int isHeapLimited() {
 #include <unordered_map>
 #include <map>
 #include <mutex>
-struct TrackedAllocation { size_t mSize; unsigned mGeneration; void* mCallers[8]; int mDepth; };
+struct TrackedAllocation { size_t mSize; unsigned mGeneration; void* mCallers[16]; int mDepth; };
 static std::unordered_map<void*, TrackedAllocation>* gTracked;
 static std::mutex gTrackedMutex;
 static thread_local int gIsTracking;
@@ -78,7 +78,7 @@ static void trackAllocation(void* tPointer, size_t tSize) {
 	TrackedAllocation e;
 	e.mSize = tSize;
 	e.mGeneration = gTrackGeneration;
-	e.mDepth = backtrace(e.mCallers, 8);
+	e.mDepth = backtrace(e.mCallers, 16);
 	{
 		std::lock_guard<std::mutex> lock(gTrackedMutex);
 		if (!gTracked) gTracked = new std::unordered_map<void*, TrackedAllocation>();
@@ -108,7 +108,7 @@ extern "C" void n3dssimDumpAllocations(size_t tMinimumTotal) {
 			if (e.mGeneration < gTrackGeneration) continue;
 			char** names = backtrace_symbols(e.mCallers, e.mDepth);
 			std::string site;
-			for (int i = 2; i < e.mDepth && i < 7; i++) {
+			for (int i = 2; i < e.mDepth && i < 14; i++) {
 				std::string name = names ? names[i] : "?";
 				const size_t open = name.find('('), plus = name.find('+');
 				if (open != std::string::npos && plus != std::string::npos && plus > open) name = name.substr(open + 1, plus - open - 1);
@@ -180,6 +180,9 @@ extern "C" {
 #else
 #define TEXTURE_MALLOC malloc
 #define TEXTURE_FREE free
+// No tracking with AddressSanitizer (it has malloc): the tests still link.
+extern "C" void n3dssimMarkAllocations() {}
+extern "C" void n3dssimDumpAllocations(size_t) {}
 #endif
 
 static size_t gLinearBudget = 0, gLinearUsed = 0;

@@ -2707,14 +2707,16 @@ void unloadMugenSpriteFile(MugenSpriteFile* tFile) {
 			unloadMugenSpriteFileSprite(&sprite.second);
 		}
 	}
-	tFile->mGroups.clear();
+	// Given back, not only emptied: a file kept between fights (a
+	// character's) held its lists' room, made in a full heap, in its middle.
+	decltype(tFile->mGroups)().swap(tFile->mGroups);
 
 	for (auto& palette : tFile->mPalettes)
 	{
 		unloadSinglePalette(palette);
 	}
-	tFile->mPalettes.clear();
-	tFile->mAllSprites.clear();
+	decltype(tFile->mPalettes)().swap(tFile->mPalettes);
+	decltype(tFile->mAllSprites)().swap(tFile->mAllSprites);
 }
 
 void unloadMugenSpriteFileSprite(MugenSpriteFileSprite* tSprite) {

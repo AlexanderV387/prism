@@ -72,7 +72,11 @@ namespace prism {
 #define unvirtualizeTextureHW unvirtualizeTextureDreamcast
 
 #elif defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+	// For tests: the textures there are (see getN3DSTextureCountsForTesting).
+	int gN3DSTexturesAlive;
+
 	void* allocN3DSTexture(size_t) {
+		gN3DSTexturesAlive++;
 		N3DSTextureData* data = (N3DSTextureData*)malloc(sizeof(N3DSTextureData));
 		data->mIsInitialized = 0;
 		data->mIndexed = NULL;
@@ -88,6 +92,7 @@ namespace prism {
 	void forgetN3DSTexture(N3DSTextureData* tTexture);   // texture_3ds.cpp
 
 	void freeN3DSTexture(void* tData) {
+		gN3DSTexturesAlive--;
 		N3DSTextureData* data = (N3DSTextureData*)tData;
 		forgetN3DSTexture(data);
 		if (data->mIsInitialized) C3D_TexDelete(&data->mTex);
