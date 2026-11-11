@@ -1,8 +1,6 @@
 #include "prism/mugensoundfilereader.h"
 
 #include <assert.h>
-#include <algorithm>
-#include <stdio.h>
 
 #include <prism/file.h>
 #include <prism/filereader.h>
@@ -39,18 +37,7 @@ namespace prism {
 
 	static struct {
 		FileReader mFileReader;
-#ifdef __3DS__
-		char mFullPath[1024];   // the file's, for the sounds read while they play
-#endif
 	} gMugenSoundFileReaderData;
-
-#ifdef __3DS__
-	// [3DS] Longer than this, a sound is read from the file while it plays
-	// instead of kept in the DSP's (linear) memory: the music inside New
-	// Kyouki's and Onslaught's .snd took some 20 MB of it, their sprites
-	// made again and again meanwhile.
-	static const uint32_t N3DS_STREAMED_SOUND_SIZE = 1024 * 1024;
-#endif
 
 	static void addSoundGroup(MugenSounds* tSounds, int tGroupNumber) {
 		MugenSoundGroup* e = (MugenSoundGroup*)allocMemory(sizeof(MugenSoundGroup));
@@ -68,16 +55,6 @@ namespace prism {
 		}
 		group = (MugenSoundGroup*)int_map_get(&tSounds->mGroups, subHeader.mGroupNumber);
 		MugenSoundSample* e = (MugenSoundSample*)allocMemory(sizeof(MugenSoundSample));
-#ifdef __3DS__
-		int isStreamed = 0;
-		if (subHeader.mSubfileLength > N3DS_STREAMED_SOUND_SIZE && gMugenSoundFileReaderData.mFullPath[0]) {
-			const uint32_t start = gMugenSoundFileReaderData.mFileReader.mGetCurrentOffset(&gMugenSoundFileReaderData.mFileReader);
-			e->mSoundEffectID = loadN3DSStreamedSoundEffect(gMugenSoundFileReaderData.mFullPath, start, subHeader.mSubfileLength);
-			isStreamed = e->mSoundEffectID != -2;
-		}
-		if (isStreamed) {}
-		else
-#endif
 		if (unsigned(getAvailableSoundMemory()) >= subHeader.mSubfileLength * 2) {
 #ifdef __3DS__
 			// [3DS] A big one straight into the DSP's memory, not through the heap.
@@ -140,50 +117,21 @@ namespace prism {
 		gMugenSoundFileReaderData.mFileReader = getFileFileReader();
 	}
 
-#ifdef __3DS__
-	// [3DS] The file's size without its sounds read while they play: what
-	// its other sounds share (counted with them, all of them were kept
-	// smaller than needed).
-	static size_t getN3DSSoundFileSizeKeptInMemory(const char* tPath) {
-		size_t size = (size_t)getFileSize(tPath);
-		char path[1024];
-		getFullPath(path, tPath);
-		FILE* file = fopen(path, "rb");
-		if (!file) return size;
-		MugenSoundFileHeader header;
-		if (fread(&header, sizeof(header), 1, file) == 1) {
-			uint32_t offset = header.mFirstSubFileOffset;
-			for (uint32_t i = 0; i < header.mNumberOfSounds && offset; i++) {
-				MugenSoundFileSubFileHeader subHeader;
-				if (fseek(file, offset, SEEK_SET) || fread(&subHeader, sizeof(subHeader), 1, file) != 1) break;
-				if (subHeader.mSubfileLength > N3DS_STREAMED_SOUND_SIZE) size -= std::min<size_t>(size, subHeader.mSubfileLength);
-				if (subHeader.mNextFileOffset <= offset) break;
-				offset = subHeader.mNextFileOffset;
-			}
-		}
-		fclose(file);
-		return size;
-	}
-#endif
-
 	MugenSounds loadMugenSoundFile(const char* tPath)
 	{
 		initMugenSoundFileReader();
 		gMugenSoundFileReaderData.mFileReader.mInit(&gMugenSoundFileReaderData.mFileReader, tPath);
 #ifdef __3DS__
-		getFullPath(gMugenSoundFileReaderData.mFullPath, tPath);
-		const int streamedBefore = getN3DSSoundsStreamed();
 		const int shrunkBefore = getN3DSSoundsShrunk(), leftOutBefore = getN3DSSoundsLeftOut();
 		const uint32_t linearBefore = linearSpaceFree();
-		startN3DSSoundFile(getN3DSSoundFileSizeKeptInMemory(tPath));
+		startN3DSSoundFile((size_t)getFileSize(tPath));
 		const int halvings = getN3DSSoundFileHalvings();
 #endif
 		MugenSounds ret = loadMugenSoundFileWithReader();
 #ifdef __3DS__
 		endN3DSSoundFile();
-		addN3DSPerfLine("  sounds %s: %u KB of linear memory, %d kept smaller (8-bit, mono or half the rate; %d halvings for all), %d left out, %d read from the SD card when played", tPath,
-			(unsigned)((linearBefore - linearSpaceFree()) / 1024), getN3DSSoundsShrunk() - shrunkBefore, halvings, getN3DSSoundsLeftOut() - leftOutBefore, getN3DSSoundsStreamed() - streamedBefore);
-		gMugenSoundFileReaderData.mFullPath[0] = '\0';
+		addN3DSPerfLine("  sounds %s: %u KB of linear memory, %d kept smaller (8-bit, mono or half the rate; %d halvings for all), %d left out", tPath,
+			(unsigned)((linearBefore - linearSpaceFree()) / 1024), getN3DSSoundsShrunk() - shrunkBefore, halvings, getN3DSSoundsLeftOut() - leftOutBefore);
 #endif
 		gMugenSoundFileReaderData.mFileReader.mDelete(&gMugenSoundFileReaderData.mFileReader);
 
