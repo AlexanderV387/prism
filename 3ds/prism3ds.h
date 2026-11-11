@@ -52,6 +52,13 @@ namespace prism {
 	// A sound read by tRead straight into linear memory (soundeffect_3ds.cpp);
 	// its ID, -1 if it could not be, -2 if it has to be read whole first.
 	int loadN3DSSoundEffectFromReader(void (*tRead)(void* tCaller, void* tDst, uint32_t tSize), void* tCaller, uint32_t tLength);
+	// A long sound of a file (tLength bytes at tOffset, a WAV) read from it
+	// while it plays, not kept in memory; -2 if it cannot be (load it as
+	// the others), -1 if it is not a WAV this plays.
+	int loadN3DSStreamedSoundEffect(const char* tPath, uint32_t tOffset, uint32_t tLength);
+	int getN3DSSoundsStreamed();
+	// The streamed sounds' buffers filled (the music's thread, each DSP frame).
+	void fillN3DSSoundStreams();
 	// The sounds kept smaller, and left out, for want of linear memory.
 	int getN3DSSoundsShrunk();
 	// A .snd's part of the linear memory left for sounds (the next one

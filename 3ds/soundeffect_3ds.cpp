@@ -4,6 +4,7 @@
 #include <string.h>
 #include <algorithm>
 #include <map>
+#include <string>
 
 #include <3ds.h>
 
@@ -27,6 +28,13 @@ namespace prism {
 		int mChannelAmount;
 		int mBytesPerSample;
 		u32 mRate;
+		// Read from its file when played (a long one: the music in a
+		// character's .snd), not kept in memory: where its samples are.
+		int mIsStreamed;
+		std::string mPath;
+		u32 mDataOffset;
+		u32 mDataLength;
+		int mInBits;
 	} N3DSSoundEffect;
 
 	static const int CHANNEL_AMOUNT = 24;
@@ -42,6 +50,30 @@ namespace prism {
 		float mChannelPanning[CHANNEL_AMOUNT];
 	} gN3DSSoundEffectData;
 
+	// ==========================================================================
+	// Long sounds read from their file while they play: a few at a time, each
+	// on its sound channel, fed by the music's thread after each DSP frame.
+
+	static const int STREAM_SLOT_AMOUNT = 4;
+	static const int STREAM_BUFFER_AMOUNT = 3;
+	static const int STREAM_BUFFER_FRAMES = 4096;
+
+	typedef struct {
+		int mIsActive;
+		int mChannel;          // prism's
+		int mSoundID;
+		FILE* mFile;
+		u32 mStart, mEnd, mPosition;   // in the file
+		int mInBits, mInChannels;
+		int mIsLooping;
+		int mIsReading;        // more to read
+		s16* mData[STREAM_BUFFER_AMOUNT];
+		ndspWaveBuf mBuffers[STREAM_BUFFER_AMOUNT];
+	} N3DSSoundStream;
+
+	static LightLock gN3DSSoundStreamLock;
+	static N3DSSoundStream gN3DSSoundStreams[STREAM_SLOT_AMOUNT];
+
 	void initSoundEffects() {
 		gN3DSSoundEffectData.mIsAvailable = R_SUCCEEDED(ndspInit());
 		if (!gN3DSSoundEffectData.mIsAvailable) {
@@ -49,6 +81,7 @@ namespace prism {
 			return;
 		}
 		ndspSetOutputMode(NDSP_OUTPUT_STEREO);
+		LightLock_Init(&gN3DSSoundStreamLock);
 		atexit(ndspExit);
 	}
 
@@ -229,12 +262,15 @@ namespace prism {
 		e.mChannelAmount = tShape.mOutChannels;
 		e.mBytesPerSample = tShape.mOutBytes;
 		e.mRate = tInfo.mRate / tShape.mStep;
+		e.mIsStreamed = 0;
+		e.mDataOffset = e.mDataLength = 0;
+		e.mInBits = tShape.mOutBytes * 8;
 		const int id = gN3DSSoundEffectData.mNextID++;
 		gN3DSSoundEffectData.mSoundEffects[id] = e;
 		return id;
 	}
 
-	static int gN3DSSoundsShrunk, gN3DSSoundsLeftOut;
+	static int gN3DSSoundsShrunk, gN3DSSoundsLeftOut, gN3DSSoundsStreamed;
 
 	// Room for a sound of tFrames: its shape and memory, NULL if none.
 	static u8* allocateSound(const WAVInfo& tInfo, u32 tFrames, SoundShape* oShape) {
@@ -332,14 +368,20 @@ namespace prism {
 		return ret;
 	}
 
+	static N3DSSoundStream* findStreamOnChannel(int tChannel);
+
 	void unloadSoundEffect(int tID) {
 		auto it = gN3DSSoundEffectData.mSoundEffects.find(tID);
 		if (it == gN3DSSoundEffectData.mSoundEffects.end()) return;
 
 		for (int i = 1; i < CHANNEL_AMOUNT; i++) {
-			if (gN3DSSoundEffectData.mPlaying[i] == it->second.mData) stopSoundEffect(i);
+			if (it->second.mIsStreamed) {
+				const N3DSSoundStream* stream = findStreamOnChannel(i);
+				if (stream && stream->mSoundID == tID) stopSoundEffect(i);
+			}
+			else if (gN3DSSoundEffectData.mPlaying[i] == it->second.mData) stopSoundEffect(i);
 		}
-		linearFree(it->second.mData);
+		if (it->second.mData) linearFree(it->second.mData);
 		gN3DSSoundEffectData.mSoundEffects.erase(it);
 	}
 
@@ -364,6 +406,177 @@ namespace prism {
 		ndspChnSetMix(toDSPChannel(tChannel), mix);
 	}
 
+	// --- Long sounds read while they play (see N3DSSoundStream) ---
+
+	static N3DSSoundStream* findStreamOnChannel(int tChannel) {
+		for (auto& stream : gN3DSSoundStreams) {
+			if (stream.mIsActive && stream.mChannel == tChannel) return &stream;
+		}
+		return NULL;
+	}
+
+	static void closeStream(N3DSSoundStream* tStream) {
+		if (tStream->mFile) fclose(tStream->mFile);
+		tStream->mFile = NULL;
+		tStream->mIsActive = 0;
+	}
+
+	// Up to tFrames of its samples, as 16-bit, into tDst: the frames read.
+	static int readStreamFrames(N3DSSoundStream* tStream, s16* tDst, int tFrames) {
+		static u8 raw[STREAM_BUFFER_FRAMES * 4];
+		const int frameBytes = tStream->mInBits / 8 * tStream->mInChannels;
+		const u32 left = tStream->mEnd - tStream->mPosition;
+		u32 want = std::min<u32>((u32)tFrames * frameBytes, left);
+		want -= want % frameBytes;
+		if (!want) return 0;
+		const size_t got = fread(raw, 1, want, tStream->mFile);
+		const int frames = int(got / frameBytes);
+		tStream->mPosition += frames * frameBytes;
+		const int values = frames * tStream->mInChannels;
+		if (tStream->mInBits == 8) {
+			for (int i = 0; i < values; i++) tDst[i] = s16((int(raw[i]) - 128) << 8);
+		}
+		else {
+			memcpy(tDst, raw, values * 2);
+		}
+		return frames;
+	}
+
+	static void rewindStream(N3DSSoundStream* tStream) {
+		fseek(tStream->mFile, tStream->mStart, SEEK_SET);
+		tStream->mPosition = tStream->mStart;
+	}
+
+	// Its free buffers filled and queued (the lock held); over once all is
+	// read and played.
+	static void fillStream(N3DSSoundStream* tStream) {
+		int isAnyQueued = 0;
+		for (int i = 0; i < STREAM_BUFFER_AMOUNT; i++) {
+			ndspWaveBuf* buf = &tStream->mBuffers[i];
+			if (buf->status == NDSP_WBUF_QUEUED || buf->status == NDSP_WBUF_PLAYING) {
+				isAnyQueued = 1;
+				continue;
+			}
+			if (!tStream->mIsReading) continue;
+			int frames = readStreamFrames(tStream, tStream->mData[i], STREAM_BUFFER_FRAMES);
+			if (frames < STREAM_BUFFER_FRAMES) {
+				if (tStream->mIsLooping && tStream->mEnd > tStream->mStart) {
+					rewindStream(tStream);
+					frames += readStreamFrames(tStream, tStream->mData[i] + frames * tStream->mInChannels, STREAM_BUFFER_FRAMES - frames);
+				}
+				else {
+					tStream->mIsReading = 0;
+				}
+			}
+			if (!frames) continue;
+			memset(buf, 0, sizeof(*buf));
+			buf->data_vaddr = tStream->mData[i];
+			buf->nsamples = frames;
+			DSP_FlushDataCache(buf->data_vaddr, frames * tStream->mInChannels * 2);
+			ndspChnWaveBufAdd(toDSPChannel(tStream->mChannel), buf);
+			isAnyQueued = 1;
+		}
+		if (!isAnyQueued && !tStream->mIsReading) closeStream(tStream);
+	}
+
+	// From the music's thread, after each DSP frame.
+	void fillN3DSSoundStreams() {
+		if (!gN3DSSoundEffectData.mIsAvailable) return;
+		LightLock_Lock(&gN3DSSoundStreamLock);
+		for (auto& stream : gN3DSSoundStreams) {
+			if (stream.mIsActive) fillStream(&stream);
+		}
+		LightLock_Unlock(&gN3DSSoundStreamLock);
+	}
+
+	static void stopStreamOnChannel(int tChannel) {
+		LightLock_Lock(&gN3DSSoundStreamLock);
+		if (N3DSSoundStream* stream = findStreamOnChannel(tChannel)) closeStream(stream);
+		LightLock_Unlock(&gN3DSSoundStreamLock);
+	}
+
+	// Started on its channel (already set up for it); 0 if it could not be.
+	static int startStream(const N3DSSoundEffect& e, int tID, int tChannel, int tIsLooping) {
+		LightLock_Lock(&gN3DSSoundStreamLock);
+		if (N3DSSoundStream* old = findStreamOnChannel(tChannel)) closeStream(old);
+		N3DSSoundStream* stream = NULL;
+		for (auto& slot : gN3DSSoundStreams) {
+			if (!slot.mIsActive) {
+				stream = &slot;
+				break;
+			}
+		}
+		int ret = 0;
+		if (stream) {
+			int hasBuffers = 1;
+			for (int i = 0; i < STREAM_BUFFER_AMOUNT; i++) {
+				if (!stream->mData[i]) stream->mData[i] = (s16*)linearAlloc(STREAM_BUFFER_FRAMES * 2 * sizeof(s16));
+				if (!stream->mData[i]) hasBuffers = 0;
+			}
+			stream->mFile = hasBuffers ? fopen(e.mPath.c_str(), "rb") : NULL;
+			if (stream->mFile) {
+				setvbuf(stream->mFile, NULL, _IOFBF, 16 * 1024);
+				stream->mChannel = tChannel;
+				stream->mSoundID = tID;
+				stream->mStart = e.mDataOffset;
+				stream->mEnd = e.mDataOffset + e.mDataLength;
+				stream->mInBits = e.mInBits;
+				stream->mInChannels = e.mChannelAmount;
+				stream->mIsLooping = tIsLooping;
+				stream->mIsReading = 1;
+				for (int i = 0; i < STREAM_BUFFER_AMOUNT; i++) memset(&stream->mBuffers[i], 0, sizeof(ndspWaveBuf));
+				rewindStream(stream);
+				stream->mIsActive = 1;
+				fillStream(stream);
+				ret = stream->mIsActive;
+			}
+		}
+		LightLock_Unlock(&gN3DSSoundStreamLock);
+		return ret;
+	}
+
+	static int isStreamPlayingOnChannel(int tChannel) {
+		for (const auto& stream : gN3DSSoundStreams) {
+			if (stream.mIsActive && stream.mChannel == tChannel) return 1;
+		}
+		return 0;
+	}
+
+	// A long sound of a file, at tOffset (tLength bytes, a WAV): read from
+	// the file when played. -2 if its header is not at the start (then
+	// loaded as the others), -1 if it is not a WAV this plays.
+	int loadN3DSStreamedSoundEffect(const char* tPath, uint32_t tOffset, uint32_t tLength) {
+		FILE* file = fopen(tPath, "rb");
+		if (!file) return -2;
+		u8 header[1024];
+		const uint32_t headerLength = std::min<uint32_t>(tLength, sizeof(header));
+		const int isRead = !fseek(file, tOffset, SEEK_SET) && fread(header, 1, headerLength, file) == headerLength;
+		fclose(file);
+		if (!isRead) return -2;
+		WAVInfo info;
+		if (!parseWAVHeader(header, headerLength, tLength, &info)) return headerLength == tLength ? -1 : -2;
+		if (!isSupportedWAV(info)) return -1;
+		const u32 frames = info.mDataLength / (info.mBits / 8 * info.mChannels);
+		if (!frames) return -1;
+		N3DSSoundEffect e;
+		e.mData = NULL;
+		e.mSampleAmount = frames;
+		e.mChannelAmount = info.mChannels;
+		e.mBytesPerSample = 2;
+		e.mRate = info.mRate;
+		e.mIsStreamed = 1;
+		e.mPath = tPath;
+		e.mDataOffset = tOffset + (u32)info.mDataStart;
+		e.mDataLength = frames * (info.mBits / 8 * info.mChannels);
+		e.mInBits = info.mBits;
+		const int id = gN3DSSoundEffectData.mNextID++;
+		gN3DSSoundEffectData.mSoundEffects[id] = e;
+		gN3DSSoundsStreamed++;
+		return id;
+	}
+
+	int getN3DSSoundsStreamed() { return gN3DSSoundsStreamed; }
+
 	// Playing, or queued and not started yet: the DSP reports a channel as
 	// playing only from its next frame, so two sounds on any free channel
 	// in the same tick (a KO voice and the announcer's "KO", a hit's sound
@@ -371,7 +584,7 @@ namespace prism {
 	int isSoundEffectPlayingOnChannel(int tChannel) {
 		if (!gN3DSSoundEffectData.mIsAvailable || tChannel < 1 || tChannel >= CHANNEL_AMOUNT) return 0;
 		const u8 status = gN3DSSoundEffectData.mWaveBufs[tChannel].status;
-		return ndspChnIsPlaying(toDSPChannel(tChannel)) || status == NDSP_WBUF_QUEUED || status == NDSP_WBUF_PLAYING;
+		return ndspChnIsPlaying(toDSPChannel(tChannel)) || status == NDSP_WBUF_QUEUED || status == NDSP_WBUF_PLAYING || isStreamPlayingOnChannel(tChannel);
 	}
 
 	static int findEmptyChannel() {
@@ -394,11 +607,12 @@ namespace prism {
 		if (tChannel < 1 || tChannel >= CHANNEL_AMOUNT) return -1;
 
 		const int dsp = toDSPChannel(tChannel);
+		stopStreamOnChannel(tChannel);
 		ndspChnWaveBufClear(dsp);
 		ndspChnReset(dsp);
 		ndspChnSetInterp(dsp, NDSP_INTERP_LINEAR);
 		ndspChnSetRate(dsp, e.mRate * (tFreqMul > 0 ? tFreqMul : 1.0f));
-		if (e.mBytesPerSample == 1) ndspChnSetFormat(dsp, e.mChannelAmount == 2 ? NDSP_FORMAT_STEREO_PCM8 : NDSP_FORMAT_MONO_PCM8);
+		if (e.mBytesPerSample == 1 && !e.mIsStreamed) ndspChnSetFormat(dsp, e.mChannelAmount == 2 ? NDSP_FORMAT_STEREO_PCM8 : NDSP_FORMAT_MONO_PCM8);
 		else ndspChnSetFormat(dsp, e.mChannelAmount == 2 ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
 
 		gN3DSSoundEffectData.mChannelVolume[tChannel] = tVolume;
@@ -407,11 +621,18 @@ namespace prism {
 
 		ndspWaveBuf* buf = &gN3DSSoundEffectData.mWaveBufs[tChannel];
 		memset(buf, 0, sizeof(*buf));
-		buf->data_vaddr = e.mData;
-		buf->nsamples = e.mSampleAmount;
-		buf->looping = tIsLooping ? true : false;
-		gN3DSSoundEffectData.mPlaying[tChannel] = e.mData;
-		ndspChnWaveBufAdd(dsp, buf);
+		if (e.mIsStreamed) {
+			buf->status = NDSP_WBUF_DONE;
+			gN3DSSoundEffectData.mPlaying[tChannel] = NULL;
+			if (!startStream(e, tID, tChannel, tIsLooping)) return -1;
+		}
+		else {
+			buf->data_vaddr = e.mData;
+			buf->nsamples = e.mSampleAmount;
+			buf->looping = tIsLooping ? true : false;
+			gN3DSSoundEffectData.mPlaying[tChannel] = e.mData;
+			ndspChnWaveBufAdd(dsp, buf);
+		}
 
 		// For the load log: the sounds of a screen's first 5 seconds.
 		static uint32_t loggedOnScreen = 0, lastFrames = 0xFFFFFFFF;
@@ -420,8 +641,8 @@ namespace prism {
 		lastFrames = frames;
 		if (frames < 300 && loggedOnScreen < 40) {
 			loggedOnScreen++;
-			addN3DSPerfLine("  sound %d at frame %u: channel %d, %u samples, %d channels, %u Hz (x%.2f), volume %.2f%s",
-				tID, (unsigned)frames, tChannel, (unsigned)e.mSampleAmount, e.mChannelAmount, (unsigned)e.mRate, tFreqMul, tVolume, tIsLooping ? ", looping" : "");
+			addN3DSPerfLine("  sound %d at frame %u: channel %d, %u samples, %d channels, %u Hz (x%.2f), volume %.2f%s%s",
+				tID, (unsigned)frames, tChannel, (unsigned)e.mSampleAmount, e.mChannelAmount, (unsigned)e.mRate, tFreqMul, tVolume, tIsLooping ? ", looping" : "", e.mIsStreamed ? ", read from the SD card" : "");
 		}
 		return tChannel;
 	}
@@ -438,6 +659,7 @@ namespace prism {
 
 	void stopSoundEffect(int tChannel) {
 		if (!gN3DSSoundEffectData.mIsAvailable || tChannel < 1 || tChannel >= CHANNEL_AMOUNT) return;
+		stopStreamOnChannel(tChannel);
 		ndspChnWaveBufClear(toDSPChannel(tChannel));
 		gN3DSSoundEffectData.mWaveBufs[tChannel].status = NDSP_WBUF_DONE;
 		gN3DSSoundEffectData.mPlaying[tChannel] = NULL;
