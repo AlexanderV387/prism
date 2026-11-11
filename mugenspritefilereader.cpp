@@ -2171,9 +2171,56 @@ static void loadSinglePalette2(SFFHeader2* tHeader, MugenSpriteFile* tDst) {
 	insertPaletteIntoMugenSpriteFile(tDst, processedPalette, palette.mGroupNo, palette.mItemNo);
 }
 
+// The palettes' table and their colors each read in one piece when the
+// colors lie close together (as they do): read one by one, a seek and two
+// reads each, Modern Kitana's hundreds of palettes took 1.3 s of the 3DS's
+// character select screen for her portraits alone.
+static int loadPalettes2InOnePiece(SFFHeader2* tHeader, MugenSpriteFile* tDst) {
+	const uint32_t total = tHeader->mPaletteTotal;
+	if (!total) return 1;
+	std::vector<SFFPalette2> nodes(total);
+	gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, tHeader->mPaletteOffset);
+	Buffer table = gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, total * sizeof(SFFPalette2));
+	if (table.mLength != total * sizeof(SFFPalette2)) {
+		freeBuffer(table);
+		return 0;
+	}
+	memcpy(nodes.data(), table.mData, table.mLength);
+	freeBuffer(table);
+
+	uint32_t start = UINT32_MAX, end = 0, colorBytes = 0;
+	for (const auto& node : nodes) {
+		if (!node.mDataLength) continue;
+		if (node.mDataLength > 256 * 4) return 0;
+		start = std::min(start, node.mDataOffset);
+		end = std::max(end, node.mDataOffset + node.mDataLength);
+		colorBytes += node.mDataLength;
+	}
+	std::vector<uint8_t> colors;
+	if (end > start) {
+		const uint32_t span = end - start;
+		if (span > 4 * 1024 * 1024 || span > 4 * colorBytes + 64 * 1024) return 0;
+		gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, tHeader->mLDataOffset + start);
+		Buffer data = gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, span);
+		if (data.mLength != span) {
+			freeBuffer(data);
+			return 0;
+		}
+		colors.assign((uint8_t*)data.mData, (uint8_t*)data.mData + span);
+		freeBuffer(data);
+	}
+	for (const auto& node : nodes) {
+		uint8_t* raw = node.mDataLength ? colors.data() + (node.mDataOffset - start) : colors.data();
+		auto processedPalette = processRawPalette2(makeBuffer(raw, node.mDataLength));
+		insertPaletteIntoMugenSpriteFile(tDst, processedPalette, node.mGroupNo, node.mItemNo);
+	}
+	return 1;
+}
+
 static void loadPalettes2(SFFHeader2* tHeader, MugenSpriteFile* tDst) {
 	int i = 0;
 
+	if (loadPalettes2InOnePiece(tHeader, tDst)) return;
 	gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, tHeader->mPaletteOffset);
 	for (i = 0; i < (int)tHeader->mPaletteTotal; i++) {
 		loadSinglePalette2(tHeader, tDst);

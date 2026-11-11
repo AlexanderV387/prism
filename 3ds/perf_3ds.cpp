@@ -16,6 +16,9 @@
 #include "prism/log.h"
 #include "prism/mugenanimationhandler.h"
 
+#ifndef N3DS_ERROR_LOG_FILE
+#define N3DS_ERROR_LOG_FILE "sdmc:/3ds/dolmexica/log.txt"   // as log_3ds.cpp's N3DS_LOG_FILE
+#endif
 #ifndef N3DS_PERF_FILE
 #define N3DS_PERF_FILE "sdmc:/3ds/dolmexica/load-log.txt"
 #endif
@@ -379,6 +382,10 @@ namespace prism {
 
 	void initN3DSPerf() {
 		gPerf.mStart = getN3DSPerfTicks();
+		// The error log (log.txt) emptied at the start: written only when
+		// something goes wrong, an old one from an earlier crash stayed and
+		// read as new. Empty now means no error this time.
+		if (FILE* errorLog = fopen(N3DS_ERROR_LOG_FILE, "wb")) fclose(errorLog);
 		gPerf.mFile = fopen(N3DS_PERF_FILE, "w");
 		setLogCallback(logCallback, NULL);
 		addN3DSPerfLine("load-time log: time in ms since the start, then what happened");
