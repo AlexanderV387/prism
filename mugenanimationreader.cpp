@@ -245,21 +245,29 @@ namespace prism {
 			recoverFromError();
 		}
 
+		// A new header replaces the earlier boxes of its kind instead of adding to them (MUGEN/Ikemen):
+		// a later ClsnNDefault replaces the default boxes, and an own ClsnN (even with 0 boxes) is the next frame's set.
 		if (!strcmp("clsn1default", name)) {
 			gMugenAnimationState.mIsReadingDefaultHitbox = 1;
 			gMugenAnimationState.mIsReadingHitbox1 = 1;
+			list_empty(&gMugenAnimationState.mDefaultHitboxes1);
 		}
 		else if (!strcmp("clsn2default", name)) {
 			gMugenAnimationState.mIsReadingDefaultHitbox = 1;
 			gMugenAnimationState.mIsReadingHitbox1 = 0;
+			list_empty(&gMugenAnimationState.mDefaultHitboxes2);
 		}
 		else if (!strcmp("clsn1", name)) {
 			gMugenAnimationState.mIsReadingDefaultHitbox = 0;
 			gMugenAnimationState.mIsReadingHitbox1 = 1;
+			gMugenAnimationState.mHasOwnHitbox1 = 1;
+			list_empty(&gMugenAnimationState.mOwnHitbox1);
 		}
 		else if (!strcmp("clsn2", name)) {
 			gMugenAnimationState.mIsReadingDefaultHitbox = 0;
 			gMugenAnimationState.mIsReadingHitbox1 = 0;
+			gMugenAnimationState.mHasOwnHitbox2 = 1;
+			list_empty(&gMugenAnimationState.mOwnHitbox2);
 		}
 		else {
 			logError("Unrecognized collision size name.");
