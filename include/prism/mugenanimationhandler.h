@@ -37,7 +37,7 @@ struct MugenAnimationHandlerElement {
 	MugenSpriteFileSprite* mLastDrawnSprite;   // [3DS] the last one ready to draw
 	MugenSpriteFileSprite* mPendingSprite;     // [3DS] the one being read, still the one asked for
 	int mPendingSpriteFrames;
-	int mIsStretchedToScreenWidth;             // [3DS] when it covers the game's screen
+	int mIsStretchedToScreenWidth;             // [3DS] when it covers the game's screen (MUGEN_ANIMATION_STRETCH_*)
 
 	int mHasPassiveHitCB;
 	void* mPassiveHitCaller;
@@ -197,6 +197,13 @@ void setMugenAnimationBlendType(MugenAnimationHandlerElement* tElement, BlendTyp
 // [3DS] When its sprite covers the game's whole screen from side to side (a
 // super's flash, a full-screen background), it is stretched to the top
 // screen's sides too (wider than the game's 4:3 screen).
+// [3DS] Widened over the top screen's wider sides when screen-sized: always
+// (an explod: a super's background or flash), or only while it is drawn
+// adding or subtracting its colors (a helper's or a hit spark's flash; not
+// a giant's arm or an eye beam drawn as they are).
+#define MUGEN_ANIMATION_STRETCH_NONE 0
+#define MUGEN_ANIMATION_STRETCH_ALWAYS 1
+#define MUGEN_ANIMATION_STRETCH_WHEN_FLASH 2
 void setMugenAnimationStretchedToScreenWidth(MugenAnimationHandlerElement* e, int tIsStretched);
 void setMugenAnimationSprites(MugenAnimationHandlerElement* tElement, MugenSpriteFile* tSprites);
 void setMugenAnimationConstraintRectangle(MugenAnimationHandlerElement* tElement, const GeoRectangle2D& tConstraintRectangle);

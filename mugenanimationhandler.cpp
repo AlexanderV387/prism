@@ -1375,7 +1375,13 @@ float getN3DSScreenSideMargin();
 static void findMugenAnimationScreenStretch(MugenAnimationHandlerElement* e, DrawSingleMugenAnimationSpriteCaller& tCaller) {
 	tCaller.mStretchX = 1.0f;
 	tCaller.mStretchCenterX = 0;
+#if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+	// For finding screen-sized pictures left unwidened (not from an explod).
+	static const int traceUnstretched = getenv("N3DS_SIM_TRACE_UNSTRETCHED") ? 1 : 0;
+	if (!e->mSprite || (!e->mIsStretchedToScreenWidth && !traceUnstretched)) return;
+#else
 	if (!e->mIsStretchedToScreenWidth || !e->mSprite) return;
+#endif
 #ifdef __3DS__
 	const float margin = getN3DSScreenSideMargin();
 #elif defined(N3DS_TEXTURE_SIM)
@@ -1385,6 +1391,8 @@ static void findMugenAnimationScreenStretch(MugenAnimationHandlerElement* e, Dra
 #endif
 	if (margin <= 0) return;
 	if (tCaller.mAngle || tCaller.mStepAngleRad || e->mHasShear) return;
+	const int isFlash = hasPrismFlagDynamic(tCaller.mStep->mFlags, MugenAnimationStepFlags::IS_ADDITION) || hasPrismFlagDynamic(tCaller.mStep->mFlags, MugenAnimationStepFlags::IS_SUBTRACTION);
+	const int isStretching = e->mIsStretchedToScreenWidth == MUGEN_ANIMATION_STRETCH_ALWAYS || (e->mIsStretchedToScreenWidth == MUGEN_ANIMATION_STRETCH_WHEN_FLASH && isFlash);
 
 	float left = tCaller.mBasePosition.x;
 	float right = left + e->mSprite->mOriginalTextureSize.x;
@@ -1419,6 +1427,15 @@ static void findMugenAnimationScreenStretch(MugenAnimationHandlerElement* e, Dra
 	if (left > width * 0.3f || right < width * 0.7f) return;              // mostly off the screen
 	const float stretch = (width + 2 * margin) / drawnWidth;
 	if (stretch < 1.001f || stretch > 1.6f) return;
+#if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+	if (!isStretching) {
+		fprintf(stderr, "n3dssim: unstretched anim %d (%dx%d) from %.0f..%.0f\n", e->mAnimation ? e->mAnimation->mID : -1,
+			(int)e->mSprite->mOriginalTextureSize.x, (int)e->mSprite->mOriginalTextureSize.y, left, right);
+		return;
+	}
+#else
+	if (!isStretching) return;
+#endif
 	// Its sides onto the top screen's: x' = c + (x - c) * stretch, with the
 	// left side going to -margin.
 	tCaller.mStretchX = stretch;
