@@ -862,6 +862,19 @@ namespace prism {
 		unloadScreen(gPrismWrapperData.mScreen);
 	}
 
+	// For tests going through several screens: the next one loaded when the
+	// current one asked for it (as the screen loop does); 1 if it changed.
+	int switchPrismWrapperScreenForDebugIfNeeded() {
+		if (gPrismWrapperData.mScreen->mGetNextScreen && !gPrismWrapperData.mNext) {
+			gPrismWrapperData.mNext = gPrismWrapperData.mScreen->mGetNextScreen();
+		}
+		if (!gPrismWrapperData.mNext || gPrismWrapperData.mIsAborted) return 0;
+		Screen* next = gPrismWrapperData.mNext;
+		unloadScreen(gPrismWrapperData.mScreen);
+		loadScreen(next);
+		return 1;
+	}
+
 	bool getWrapperAbortEnabled()
 	{
 		return !gPrismWrapperData.mIsAbortDisabled;

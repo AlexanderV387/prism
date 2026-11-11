@@ -54,6 +54,7 @@ void updatePrismWrapperScreenForDebugWithIterations(int tIterations);
 void updatePrismWrapperScreenForDebugWithIterationsAndRender(int tIterations);
 void renderPrismWrapperScreenForDebugOnce();
 void unloadPrismWrapperScreenForDebug();
+int switchPrismWrapperScreenForDebugIfNeeded();
 
 #define EXPORT_TEST(ScreenName) { void func_##ScreenName(); }
 
