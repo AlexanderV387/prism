@@ -122,12 +122,14 @@ namespace prism {
 
 	// ==========================================================================
 
-	static int gIsFullWidth = 1;
-	// Stretched: the game's 4:3 screen over the whole top screen, a little
-	// wider; else (the default) the game at its shape, more of the stage
-	// seen at the sides, its full-screen effects widened to them
-	// (mugenanimationhandler.cpp).
-	static int gIsStretched = 0;
+	// Full width: the game at its shape with more of the stage seen at the
+	// sides (its full-screen effects widened to them, mugenanimationhandler.cpp).
+	// Not used any more: MUGEN's effects are made for its 4:3 screen, and
+	// widened they were cut or pulled out of shape. The screen is either
+	// stretched (the game's 4:3 screen over the whole top screen, a little
+	// wider; the default) or normal (4:3, black bands at the sides).
+	static int gIsFullWidth = 0;
+	static int gIsStretched = 1;
 
 	static void updateScreenTransform();
 	void setN3DSScreenFullWidth(int tIsFullWidth) { gIsFullWidth = tIsFullWidth; }
