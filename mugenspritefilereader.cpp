@@ -2472,11 +2472,9 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 
 	MugenSpriteFileSprite e;
 #ifdef __3DS__
-	// A high resolution stage's sprites one by one in the load's log, each
-	// written before it is read (the train's load ended in them).
+	// A high resolution stage's sprites one by one in the load's log.
 	if (gPrismMugenSpriteFileReaderData.mDownscale > 1) {
 		addN3DSPerfLine("    sprite %d,%d: %dx%d, format %d, %d bits, %u bytes, heap %d KB used", sprite.mGroupNo, sprite.mItemNo, sprite.mWidth, sprite.mHeight, sprite.mFormat, sprite.mColorDepth, (unsigned)sprite.mDataLength, getN3DSHeapUsedKB());
-		flushN3DSPerfNow();
 	}
 #endif
 #ifdef N3DS_HEAP_GUARD

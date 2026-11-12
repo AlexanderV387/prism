@@ -336,10 +336,9 @@ namespace prism {
 		size_t length = strlen(line);
 		while (length && (line[length - 1] == '\n' || line[length - 1] == '\r')) line[--length] = '\0';
 		addN3DSPerfLine("%s", line);
-		// Written at once while loading (each line: the train's fight load
-		// ended without a word between two file reads): a game that stops
-		// without an error screen leaves where it was.
-		flushPerf();
+		// Written at once before each file read while loading: a game that
+		// stops without a word (no error screen) leaves where it was.
+		if (strstr(text, "Loading") || strstr(text, "Unloading handled screen")) flushPerf();
 
 		if (strstr(text, "Show screen")) {
 			endLoad();
