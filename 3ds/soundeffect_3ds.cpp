@@ -192,7 +192,7 @@ namespace prism {
 
 	static void convertFrame(SoundConverter* c, const u8* tFrame) {
 		const int inBytes = c->mInfo->mBits / 8;
-		if (c->mFrame++ % c->mShape.mStep) return;
+		if (c->mFrame++ & (c->mShape.mStep - 1)) return;   // a step of 1 or 2
 		int values[2];
 		values[0] = readInputSample(tFrame, c->mInfo->mBits);
 		values[1] = c->mInfo->mChannels == 2 ? readInputSample(tFrame + inBytes, c->mInfo->mBits) : values[0];
@@ -209,6 +209,31 @@ namespace prism {
 
 	static void convertBytes(SoundConverter* c, const u8* tSrc, size_t tLength) {
 		const int frameBytes = c->mInfo->mBits / 8 * c->mInfo->mChannels;
+		// Kept as it is (most sounds): the bytes copied, the 8-bit ones made
+		// signed, the same as frame by frame (Starfire's 6.9 MB took 2.6 s so).
+		if (c->mShape.mStep == 1 && c->mShape.mOutChannels == c->mInfo->mChannels && c->mShape.mOutBytes * 8 == c->mInfo->mBits) {
+			while (tLength && c->mPartialLength) {
+				c->mPartial[c->mPartialLength++] = *tSrc++;
+				tLength--;
+				if (c->mPartialLength == frameBytes) {
+					convertFrame(c, c->mPartial);
+					c->mPartialLength = 0;
+				}
+			}
+			const size_t whole = tLength - tLength % frameBytes;
+			if (c->mShape.mOutBytes == 2) {
+				memcpy(c->mDst, tSrc, whole);
+			}
+			else {
+				for (size_t i = 0; i < whole; i++) c->mDst[i] = tSrc[i] ^ 0x80;
+			}
+			c->mDst += whole;
+			c->mFrame += u32(whole / frameBytes);
+			tSrc += whole;
+			tLength -= whole;
+			while (tLength--) c->mPartial[c->mPartialLength++] = *tSrc++;
+			return;
+		}
 		while (tLength && c->mPartialLength) {
 			c->mPartial[c->mPartialLength++] = *tSrc++;
 			tLength--;

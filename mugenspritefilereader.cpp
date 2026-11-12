@@ -636,39 +636,44 @@ static Buffer parseRGBAPNGDownscaled(png_structp* png_ptr, png_infop* info_ptr, 
 		png_get_tRNS(*png_ptr, *info_ptr, &transAlpha, &transAmount, &transColor);
 	}
 
+	// Each block's pixels added up block by block (no division per pixel:
+	// the 3DS's CPU has none, each one a call; the same sums as before).
 	for (int y = 0; y < h; y++) {
 		memset(sums, 0, w * 5 * sizeof(uint32_t));
 		for (int j = 0; j < tFactor; j++) {
 			const int sourceRow = y * tFactor + j;
 			if (sourceRow >= height) break;
 			png_read_row(*png_ptr, (png_bytep)rowData, NULL);
-			int byteIndex = 0;
-			for (int x = 0; x < width; x++) {
-				uint32_t r, g, b, a;
+			const uint8_t* src = rowData;
+			uint32_t* sum = sums;
+			for (int bx = 0; bx < w; bx++, sum += 5) {
+				const int count = std::min(tFactor, width - bx * tFactor);
+				uint32_t sb = 0, sg = 0, sr = 0, sa = 0;
 				if (tIsPaletted) {
-					const int index = rowData[byteIndex++];
-					if (index < palAmount) {
-						r = pngPalette[index].red;
-						g = pngPalette[index].green;
-						b = pngPalette[index].blue;
+					for (int k = 0; k < count; k++) {
+						const int index = *src++;
+						uint32_t r = 0, g = 0, b = 0;
+						if (index < palAmount) {
+							r = pngPalette[index].red;
+							g = pngPalette[index].green;
+							b = pngPalette[index].blue;
+						}
+						const uint32_t a = (transAmount == 0 || index >= transAmount) ? 255 : transAlpha[index];
+						sb += b * a; sg += g * a; sr += r * a; sa += a;
 					}
-					else {
-						r = g = b = 0;
+				}
+				else if (tHasAlpha) {
+					for (int k = 0; k < count; k++, src += 4) {
+						const uint32_t a = src[3];
+						sb += src[2] * a; sg += src[1] * a; sr += src[0] * a; sa += a;
 					}
-					a = (transAmount == 0 || index >= transAmount) ? 255 : transAlpha[index];
 				}
 				else {
-					r = rowData[byteIndex++];
-					g = rowData[byteIndex++];
-					b = rowData[byteIndex++];
-					a = tHasAlpha ? rowData[byteIndex++] : 255;
+					for (int k = 0; k < count; k++, src += 3) {
+						sb += src[2] * 255u; sg += src[1] * 255u; sr += src[0] * 255u; sa += 255;
+					}
 				}
-				uint32_t* sum = sums + (x / tFactor) * 5;
-				sum[0] += b * a;
-				sum[1] += g * a;
-				sum[2] += r * a;
-				sum[3] += a;
-				sum[4]++;
+				sum[0] += sb; sum[1] += sg; sum[2] += sr; sum[3] += sa; sum[4] += count;
 			}
 		}
 		for (int x = 0; x < w; x++) {
@@ -929,6 +934,172 @@ static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawBuffer(Buffer& tRaw
 	return makeMugenSpriteFileSpriteFromRawAndPaletteBufferGeneral(tRawImageBuffer, makeBuffer(NULL, 0), 0, tWidth, tHeight, tBytesPerLine, tAxisOffset);
 }
 
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+// [3DS] The pixels of a sprite file read smaller (a high resolution stage's
+// 32-bit PNGs, decoded row by row: Alpine Train's 32 took 6 to 7 s of its
+// load) kept on the SD card after the first load, read back as they are the
+// next times (the same pixels, without the PNGs). One file a sprite file and
+// factor, in cache/: its size, factor and each sprite's data length must
+// match, or it is made again; one not finished (its header written last)
+// does not count.
+#include <sys/stat.h>
+#ifndef N3DS_DOWNSCALE_CACHE_DIRECTORY
+#define N3DS_DOWNSCALE_CACHE_DIRECTORY "sdmc:/3ds/dolmexica/cache"
+#endif
+
+enum { N3DS_DOWNSCALE_CACHE_OFF, N3DS_DOWNSCALE_CACHE_READING, N3DS_DOWNSCALE_CACHE_WRITING };
+static const uint32_t N3DS_DOWNSCALE_CACHE_MAGIC = 0x31534C44;   // "DLS1"
+
+typedef struct {
+	uint32_t mMagic, mSourceSize, mDownscale, mEntryAmount, mIndexOffset;
+} N3DSDownscaleCacheHeader;
+
+typedef struct {
+	uint32_t mOrdinal, mDataLength, mWidth, mHeight, mOffset;
+} N3DSDownscaleCacheEntry;
+
+static struct {
+	int mMode = N3DS_DOWNSCALE_CACHE_OFF;
+	FILE* mFile = NULL;
+	std::string mPath;
+	uint32_t mSourceSize = 0;
+	uint32_t mDownscale = 1;
+	uint32_t mOrdinal = 0;           // the sprite being loaded, in the file's list
+	uint32_t mWritten = 0;           // where the next pixels go
+	int mIsBroken = 0;
+	std::map<uint32_t, N3DSDownscaleCacheEntry> mEntries;
+	uint32_t mHits = 0, mMisses = 0;
+} gN3DSDownscaleCache;
+
+static std::string getN3DSDownscaleCacheDirectory() {
+#if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+	const char* directory = getenv("N3DS_SIM_CACHE_DIR");
+	return directory ? directory : "";
+#else
+	return N3DS_DOWNSCALE_CACHE_DIRECTORY;
+#endif
+}
+
+static void beginN3DSDownscaleCache(const char* tPath, uint32_t tSourceSize, int tDownscale) {
+	auto& c = gN3DSDownscaleCache;
+	c.mMode = N3DS_DOWNSCALE_CACHE_OFF;
+	c.mEntries.clear();
+	c.mHits = c.mMisses = 0;
+	c.mIsBroken = 0;
+	c.mOrdinal = 0;
+	const std::string directory = getN3DSDownscaleCacheDirectory();
+	if (tDownscale <= 1 || directory.empty()) return;
+
+	uint32_t hash = 2166136261u;
+	for (const char* p = tPath; *p; p++) hash = (hash ^ (uint8_t)*p) * 16777619u;
+	char name[64];
+	snprintf(name, sizeof(name), "/%08lx-%lu-%d.dls", (unsigned long)hash, (unsigned long)tSourceSize, tDownscale);
+	c.mPath = directory + name;
+	c.mSourceSize = tSourceSize;
+	c.mDownscale = uint32_t(tDownscale);
+
+	if (FILE* file = fopen(c.mPath.c_str(), "rb")) {
+		N3DSDownscaleCacheHeader header;
+		int isValid = fread(&header, sizeof(header), 1, file) == 1 && header.mMagic == N3DS_DOWNSCALE_CACHE_MAGIC
+			&& header.mSourceSize == tSourceSize && header.mDownscale == (uint32_t)tDownscale && header.mEntryAmount < 100000;
+		if (isValid) {
+			std::vector<N3DSDownscaleCacheEntry> entries(header.mEntryAmount);
+			isValid = !fseek(file, header.mIndexOffset, SEEK_SET)
+				&& (entries.empty() || fread(entries.data(), sizeof(N3DSDownscaleCacheEntry), entries.size(), file) == entries.size());
+			if (isValid) for (const auto& entry : entries) c.mEntries[entry.mOrdinal] = entry;
+		}
+		if (isValid) {
+			c.mFile = file;
+			c.mMode = N3DS_DOWNSCALE_CACHE_READING;
+			return;
+		}
+		fclose(file);
+	}
+
+	mkdir(directory.c_str(), 0777);
+	c.mFile = fopen(c.mPath.c_str(), "wb");
+	if (!c.mFile) return;
+	// Its pixels in large writes (growing a file on the SD card a kilobyte
+	// at a time is slow).
+	static char buffer[64 * 1024];
+	setvbuf(c.mFile, buffer, _IOFBF, sizeof(buffer));
+	N3DSDownscaleCacheHeader header = { 0, tSourceSize, (uint32_t)tDownscale, 0, 0 };
+	if (fwrite(&header, sizeof(header), 1, c.mFile) != 1) {
+		fclose(c.mFile);
+		c.mFile = NULL;
+		remove(c.mPath.c_str());
+		return;
+	}
+	c.mWritten = sizeof(header);
+	c.mMode = N3DS_DOWNSCALE_CACHE_WRITING;
+}
+
+static void setN3DSDownscaleCacheOrdinal(uint32_t tOrdinal) {
+	gN3DSDownscaleCache.mOrdinal = tOrdinal;
+}
+
+// This sprite's pixels from the cache, if there.
+static int hasN3DSDownscaleCacheSprite(uint32_t tDataLength, int tWidth, int tHeight) {
+	auto& c = gN3DSDownscaleCache;
+	if (c.mMode != N3DS_DOWNSCALE_CACHE_READING) return 0;
+	const auto it = c.mEntries.find(c.mOrdinal);
+	return it != c.mEntries.end() && it->second.mDataLength == tDataLength && it->second.mWidth == (uint32_t)tWidth && it->second.mHeight == (uint32_t)tHeight;
+}
+
+static int readN3DSDownscaleCacheSprite(Buffer* oBuffer, uint32_t tDataLength, int tWidth, int tHeight) {
+	auto& c = gN3DSDownscaleCache;
+	if (!hasN3DSDownscaleCacheSprite(tDataLength, tWidth, tHeight)) return 0;
+	const auto& entry = c.mEntries[c.mOrdinal];
+	const size_t length = size_t(tWidth) * tHeight * 4;
+	uint8_t* data = (uint8_t*)allocMemory(int(length));
+	if (fseek(c.mFile, entry.mOffset, SEEK_SET) || fread(data, 1, length, c.mFile) != length) {
+		freeMemory(data);
+		c.mMisses++;
+		return 0;
+	}
+	c.mHits++;
+	*oBuffer = makeBufferOwned(data, int(length));
+	return 1;
+}
+
+static void writeN3DSDownscaleCacheSprite(const Buffer& tBuffer, uint32_t tDataLength, int tWidth, int tHeight) {
+	auto& c = gN3DSDownscaleCache;
+	if (c.mMode != N3DS_DOWNSCALE_CACHE_WRITING || c.mIsBroken) return;
+	if (tBuffer.mLength != uint32_t(tWidth) * tHeight * 4) return;
+	if (fwrite(tBuffer.mData, 1, tBuffer.mLength, c.mFile) != tBuffer.mLength) {
+		c.mIsBroken = 1;
+		return;
+	}
+	c.mEntries[c.mOrdinal] = N3DSDownscaleCacheEntry{ c.mOrdinal, tDataLength, (uint32_t)tWidth, (uint32_t)tHeight, c.mWritten };
+	c.mWritten += tBuffer.mLength;
+	c.mMisses++;
+}
+
+// The load's end: a cache written is finished (its index, then its header).
+static void endN3DSDownscaleCache() {
+	auto& c = gN3DSDownscaleCache;
+	if (c.mMode == N3DS_DOWNSCALE_CACHE_WRITING) {
+		std::vector<N3DSDownscaleCacheEntry> entries;
+		for (const auto& entry : c.mEntries) entries.push_back(entry.second);
+		const N3DSDownscaleCacheHeader header = { N3DS_DOWNSCALE_CACHE_MAGIC, c.mSourceSize, c.mDownscale, (uint32_t)entries.size(), c.mWritten };
+		int isWritten = !c.mIsBroken && !entries.empty()
+			&& (fwrite(entries.data(), sizeof(N3DSDownscaleCacheEntry), entries.size(), c.mFile) == entries.size())
+			&& !fflush(c.mFile) && !fseek(c.mFile, 0, SEEK_SET)
+			&& fwrite(&header, sizeof(header), 1, c.mFile) == 1;
+		isWritten = !fclose(c.mFile) && isWritten;
+		if (!isWritten) remove(c.mPath.c_str());
+	}
+	else if (c.mMode == N3DS_DOWNSCALE_CACHE_READING) {
+		fclose(c.mFile);
+		// Some of its sprites not there or not read: made again next time.
+		if (c.mMisses) remove(c.mPath.c_str());
+	}
+	c.mFile = NULL;
+	c.mMode = N3DS_DOWNSCALE_CACHE_OFF;
+	c.mEntries.clear();
+}
+#endif
+
 static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawPNGBuffer(Buffer& tRawPNGBuffer, int tWidth, int tHeight, int tBytesPerLine, const Vector2D& tAxisOffset, int tColorDepth, const std::vector<MugenSpriteFilePalette>& tPalettes, int tPalette) {
 	if (tColorDepth == 8)
 	{
@@ -944,11 +1115,21 @@ static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawPNGBuffer(Buffer& t
 	else
 	{
 		const int downscale = gPrismMugenSpriteFileReaderData.mDownscale;
-		Buffer argb32Buffer = loadBufferFromRawPNGBuffer(tRawPNGBuffer, tBytesPerLine, tHeight, 1, downscale);
-		freeBuffer(tRawPNGBuffer);
-
 		const int width = (tWidth + downscale - 1) / downscale;
 		const int height = (tHeight + downscale - 1) / downscale;
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+		Buffer argb32Buffer;
+		if (downscale <= 1 || !readN3DSDownscaleCacheSprite(&argb32Buffer, tRawPNGBuffer.mLength, width, height)) {
+			// Its PNG not read when the cache had it (the reader still at it).
+			if (!tRawPNGBuffer.mData) tRawPNGBuffer = gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, tRawPNGBuffer.mLength);
+			argb32Buffer = loadBufferFromRawPNGBuffer(tRawPNGBuffer, tBytesPerLine, tHeight, 1, downscale);
+			if (downscale > 1) writeN3DSDownscaleCacheSprite(argb32Buffer, tRawPNGBuffer.mLength, width, height);
+		}
+#else
+		Buffer argb32Buffer = loadBufferFromRawPNGBuffer(tRawPNGBuffer, tBytesPerLine, tHeight, 1, downscale);
+#endif
+		freeBuffer(tRawPNGBuffer);
+
 		auto subImageList = breakImageBufferUpIntoMultipleBuffers(argb32Buffer, downscale > 1 ? width : tBytesPerLine, width, height, 4);
 		freeBuffer(argb32Buffer);
 
@@ -2525,7 +2706,15 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 		uint16_t textureWidth, textureHeight;
 		gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &textureWidth, 2);
 		gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &textureHeight, 2);
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+		// Its smaller pixels in the cache: its PNG not read.
+		const int cacheDownscale = gPrismMugenSpriteFileReaderData.mDownscale;
+		Buffer pngBuffer = (cacheDownscale > 1 && sprite.mColorDepth != 8 && hasN3DSDownscaleCacheSprite(sprite.mDataLength, (sprite.mWidth + cacheDownscale - 1) / cacheDownscale, (sprite.mHeight + cacheDownscale - 1) / cacheDownscale))
+			? makeBuffer(NULL, sprite.mDataLength)
+			: gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, sprite.mDataLength);
+#else
 		Buffer pngBuffer = gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, sprite.mDataLength);
+#endif
 		e = makeMugenSpriteFileSpriteFromRawPNGBuffer(pngBuffer, sprite.mWidth, sprite.mHeight, sprite.mWidth, Vector2D(sprite.mAxisX, sprite.mAxisY), sprite.mColorDepth, tDst->mPalettes, palette);
 		gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, originalPosition);
 	}
@@ -2544,6 +2733,9 @@ static void loadSprites2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tHasPal
 	for (i = 0; i < (int)tHeader->mSpriteTotal; i++) {
 #ifdef __3DS__
 		const size_t spritesBefore = tDst->mAllSprites.size();
+#endif
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+		setN3DSDownscaleCacheOrdinal(uint32_t(i));
 #endif
 		loadSingleSprite2(tHeader, tDst, tHasPalette);
 #ifdef __3DS__
@@ -2821,6 +3013,9 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 #ifdef __3DS__
 	gN3DSFileBufferSize = 0;
 #endif
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits) beginN3DSDownscaleCache(tPath, uint32_t(getFileSize(tPath)), gPrismMugenSpriteFileReaderData.mDownscale);
+#endif
 
 	SFFSharedHeader header;
 	gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &header, sizeof(SFFSharedHeader));
@@ -2847,7 +3042,13 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	}
 
 	gPrismMugenSpriteFileReaderData.mReader.mDelete(&gPrismMugenSpriteFileReaderData.mReader);
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+	const auto n3dsCacheMode = gN3DSDownscaleCache.mMode;
+	const auto n3dsCacheHits = gN3DSDownscaleCache.mHits, n3dsCacheMisses = gN3DSDownscaleCache.mMisses;
+	endN3DSDownscaleCache();
+#endif
 #if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+	if (n3dsCacheMode != N3DS_DOWNSCALE_CACHE_OFF) fprintf(stderr, "n3dssim: %s: smaller sprites %s the cache: %u read, %u decoded\n", tPath, n3dsCacheMode == N3DS_DOWNSCALE_CACHE_READING ? "from" : "written to", n3dsCacheHits, n3dsCacheMisses);
 	gPrismMugenSpriteFileReaderData.mReader = originalN3DSReader;
 	if (gN3DSSpritesLeftOut) fprintf(stderr, "n3dssim: %s: %d sprites left out, no room in the heap\n", tPath, gN3DSSpritesLeftOut);
 	if (gN3DSStreamedSprites) fprintf(stderr, "n3dssim: %s: %u sprites streamed (read when drawn)\n", tPath, gN3DSStreamedSprites);
@@ -2864,7 +3065,8 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 			(gN3DSPerf.mReadBytes - n3dsBefore.mReadBytes) / 1024.0, tex, gN3DSPerf.mTextures - n3dsBefore.mTextures, total - io - tex);
 		if (gN3DSSpritesLeftOut) addN3DSPerfLine("  %d sprites left out: no room in the heap", gN3DSSpritesLeftOut);
 		if (gN3DSStreamedSprites) addN3DSPerfLine("  %u sprites streamed: read from the file when drawn", gN3DSStreamedSprites);
-		if (gPrismMugenSpriteFileReaderData.mDownscale > 1) flushN3DSPerfNow();
+		if (n3dsCacheMode == N3DS_DOWNSCALE_CACHE_READING) addN3DSPerfLine("  smaller sprites from the cache: %u read, %u decoded", n3dsCacheHits, n3dsCacheMisses);
+		if (n3dsCacheMode == N3DS_DOWNSCALE_CACHE_WRITING) addN3DSPerfLine("  smaller sprites written to the cache: %u", n3dsCacheMisses);
 	}
 #endif
 

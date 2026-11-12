@@ -73,6 +73,7 @@ namespace prism {
 		uint64_t mStart;
 
 		int mIsLoading;
+		int mLoadWarnings;   // the load's warnings and errors, the first ones in this log
 		uint64_t mLoadStart;
 		N3DSPerfCounters mLoadCounters;
 		N3DSPerfCounters mShownCounters;   // when the screen was shown
@@ -121,9 +122,17 @@ namespace prism {
 	// Written between loads only (writing to the SD card takes time).
 	static void flushPerf() {
 		if (!gPerf.mFile || gPerf.mPending.empty()) return;
-		fwrite(gPerf.mPending.data(), 1, gPerf.mPending.size(), gPerf.mFile);
+		const uint64_t start = getN3DSPerfTicks();
+		const size_t length = gPerf.mPending.size();
+		fwrite(gPerf.mPending.data(), 1, length, gPerf.mFile);
 		fflush(gPerf.mFile);
 		gPerf.mPending.clear();
+		const double ms = getN3DSPerfMilliseconds(getN3DSPerfTicks() - start);
+		if (ms > 100) {
+			char line[160];
+			snprintf(line, sizeof(line), "%9.1f   load-log.txt: %u KB written in %.0f ms\n", sinceStart(), (unsigned)(length / 1024), ms);
+			gPerf.mPending += line;
+		}
 		// Its room let go too when big: grown while a fight loaded (New
 		// Kyouki's: 100s of KB), it stayed in the middle of the heap for the
 		// next fight.
@@ -171,10 +180,13 @@ namespace prism {
 		gPerf.mSlowFrames = gPerf.mVerySlowFrames = 0;
 	}
 
+	static const int N3DS_LOAD_WARNINGS_SHOWN = 20;
+
 	static void startLoad() {
 		writeFrameStatistics();
 		gPerf.mScreen++;
 		gPerf.mIsLoading = 1;
+		gPerf.mLoadWarnings = 0;
 		gPerf.mLoadStart = getN3DSPerfTicks();
 		gPerf.mLoadCounters = gN3DSPerf;
 		addN3DSPerfLine("screen %d: loading", gPerf.mScreen);
@@ -196,6 +208,7 @@ namespace prism {
 		const auto info = mallinfo();
 		addN3DSPerfLine("  heap %d KB used, linear memory %d KB free", (int)(info.uordblks / 1024), (int)(linearSpaceFree() / 1024));
 		if (c.mDeferredTextures) addN3DSPerfLine("  %u textures without room yet: made when drawn", c.mDeferredTextures);
+		if (gPerf.mLoadWarnings > N3DS_LOAD_WARNINGS_SHOWN) addN3DSPerfLine("  %d warnings in all (the first %d above; compat-log.txt counts them all)", gPerf.mLoadWarnings, N3DS_LOAD_WARNINGS_SHOWN);
 		flushPerf();
 		gPerf.mShownCounters = gN3DSPerf;
 		gPerf.mLastFrame = 0;
@@ -328,6 +341,9 @@ namespace prism {
 		if (strstr(text, "StateMachineStateChange")) return;   // every move in a fight
 		if (strstr(text, "Loading handled screen")) startLoad();
 		if (!gPerf.mIsLoading && !strstr(text, "Unloading handled screen")) return;
+		// A load's first warnings only (Starfire's: 486 of the same few, each
+		// several lines): compat-log.txt counts them all.
+		if (tEntry.mType == LOG_TYPE_WARNING && ++gPerf.mLoadWarnings > N3DS_LOAD_WARNINGS_SHOWN) return;
 
 		const char* message = strchr(text, ']');
 		message = message ? message + 2 : text;
@@ -398,6 +414,11 @@ namespace prism {
 		// read as new. Empty now means no error this time.
 		if (FILE* errorLog = fopen(N3DS_ERROR_LOG_FILE, "wb")) fclose(errorLog);
 		gPerf.mFile = fopen(N3DS_PERF_FILE, "w");
+		// Written through a 64 KB buffer: growing a file on the SD card a
+		// kilobyte at a time (the default buffer) is slow, 75 KB of a fight's
+		// warnings (Starfire's) took 8.7 s of its load.
+		static char buffer[64 * 1024];
+		if (gPerf.mFile) setvbuf(gPerf.mFile, buffer, _IOFBF, sizeof(buffer));
 		setLogCallback(logCallback, NULL);
 		atexit(flushPerfAtExit);
 		addN3DSPerfLine("load-time log: time in ms since the start, then what happened");

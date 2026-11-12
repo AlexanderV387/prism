@@ -114,7 +114,14 @@ namespace prism {
 	}
 
 	static void initMugenSoundFileReader() {
+#ifdef __3DS__
+		// [3DS] Read in 512 KB windows (the sounds one after the other in the
+		// file): fewer, larger reads of the SD card than through the file's
+		// 64 KB buffer, sought anew at each sound.
+		gMugenSoundFileReaderData.mFileReader = getWindowedFileFileReader();
+#else
 		gMugenSoundFileReaderData.mFileReader = getFileFileReader();
+#endif
 	}
 
 	MugenSounds loadMugenSoundFile(const char* tPath)
