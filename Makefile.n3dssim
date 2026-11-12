@@ -23,6 +23,13 @@ CXX ?= g++
 CXXFLAGS = -std=c++17 -fpermissive -O1 -g -fsanitize=address -fno-omit-frame-pointer -Wno-write-strings \
 	-DN3DS_TEXTURE_SIM -Iinclude -Ilinux/n3dssim -Ilinux/shim $(shell pkg-config --cflags libpng zlib) \
 	-include cstdint -include cstring
+# LINEAR_DIAG=1: as the 3DS's linear memory diagnosis build (the reserves as
+# prueba 95 was), in its own directories.
+ifdef LINEAR_DIAG
+CXXFLAGS += -DN3DS_LINEAR_DIAG
+OBJDIR = build_n3dssim_diag
+BINDIR = bin_n3dssim_diag
+endif
 
 all: $(BINDIR)/libprism.a
 
