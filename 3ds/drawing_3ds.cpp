@@ -790,6 +790,9 @@ namespace prism {
 		const int rowSize = (width * 3 + 3) & ~3;
 		FILE* file = fopen(tPath, "wb");
 		if (!file) return 0;
+		// Written to the SD in a few large pieces, not one per row.
+		static char buffer[64 * 1024];
+		setvbuf(file, buffer, _IOFBF, sizeof(buffer));
 		u8 header[54] = { 'B', 'M' };
 		const u32 dataSize = (u32)rowSize * height, fileSize = 54 + dataSize;
 		memcpy(header + 2, &fileSize, 4);
