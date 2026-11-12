@@ -1101,6 +1101,24 @@ typedef struct {
 	float mStretchCenterX;
 } DrawSingleMugenAnimationSpriteCaller;
 
+// A rectangle of a piece's sprite pixels (inclusive, maybe flipped) in its
+// texels, for a piece read tScale times smaller.
+static PrismRectangle getPieceTextureRectangle(const PrismRectangle& tPixels, int tScale) {
+	if (tScale <= 1) return tPixels;
+	const auto toTexels = [tScale](int tFrom, int tTo, int* oFrom, int* oTo) {
+		const int low = min(tFrom, tTo);
+		const int high = max(tFrom, tTo);
+		const int lowTexel = low / tScale;
+		const int highTexel = max(lowTexel, (high + 1 + tScale - 1) / tScale - 1);
+		if (tFrom <= tTo) { *oFrom = lowTexel; *oTo = highTexel; }
+		else { *oFrom = highTexel; *oTo = lowTexel; }
+	};
+	PrismRectangle ret = tPixels;
+	toTexels(tPixels.topLeft.x, tPixels.bottomRight.x, &ret.topLeft.x, &ret.bottomRight.x);
+	toTexels(tPixels.topLeft.y, tPixels.bottomRight.y, &ret.topLeft.y, &ret.bottomRight.y);
+	return ret;
+}
+
 static void drawSingleMugenAnimationSprite(MugenSpriteFileSubSprite& tSprite, DrawSingleMugenAnimationSpriteCaller& tCaller) {
 	setProfilingSectionMarkerCurrentFunction();
 
@@ -1109,20 +1127,24 @@ static void drawSingleMugenAnimationSprite(MugenSpriteFileSubSprite& tSprite, Dr
 	Position p = tCaller.mBasePosition;
 	p = p + Vector2D(tSprite.mOffset.x, tSprite.mOffset.y);
 
-	const auto realSpriteSize = vecMinI2D(Vector2DI(e->mSprite->mOriginalTextureSize.x, e->mSprite->mOriginalTextureSize.y) - tSprite.mOffset, Vector2DI(tSprite.mTexture.mTextureSize.x, tSprite.mTexture.mTextureSize.y));
+	// Worked out in the sprite's own pixels; a piece read smaller (mScale
+	// sprite pixels per texel) is drawn back at its size at the end.
+	const int pieceScale = tSprite.mScale > 1 ? tSprite.mScale : 1;
+	const auto pieceSize = Vector2DI(tSprite.mTexture.mTextureSize.x * pieceScale, tSprite.mTexture.mTextureSize.y * pieceScale);
+	const auto realSpriteSize = vecMinI2D(Vector2DI(e->mSprite->mOriginalTextureSize.x, e->mSprite->mOriginalTextureSize.y) - tSprite.mOffset, pieceSize);
 	auto texturePos = makeRectangle(0, 0, realSpriteSize.x - 1, realSpriteSize.y - 1);
 
 	if (e->mHasRectangleWidth) {
 		int newWidth = e->mRectangleWidth - tSprite.mOffset.x;
 		if (newWidth <= 0) return;
-		newWidth = min(newWidth, tSprite.mTexture.mTextureSize.x);
+		newWidth = min(newWidth, pieceSize.x);
 		texturePos.bottomRight.x = texturePos.topLeft.x + newWidth;
 	}
 
 	if (e->mHasRectangleHeight) {
 		int newHeight = e->mRectangleHeight - tSprite.mOffset.y;
 		if (newHeight <= 0) return;
-		newHeight = min(newHeight, tSprite.mTexture.mTextureSize.y);
+		newHeight = min(newHeight, pieceSize.y);
 		texturePos.bottomRight.y = texturePos.topLeft.y + newHeight;
 	}
 
@@ -1251,7 +1273,17 @@ static void drawSingleMugenAnimationSprite(MugenSpriteFileSubSprite& tSprite, Dr
 		const auto rightTop = e->mShearLowerOffsetX * parallaxTUp + scaleCenterX + dRightDeltaPosTop;
 		const auto leftBottom = e->mShearLowerOffsetX * parallaxTDown + scaleCenterX + dLeftDeltaPosBottom;
 		const auto rightBottom = e->mShearLowerOffsetX * parallaxTDown + scaleCenterX + dRightDeltaPosBottom;
-		drawSpriteNoRectangle(tSprite.mTexture, Vector3D(leftTop, p.y, p.z), Vector3D(rightTop, p.y, p.z), Vector3D(leftBottom, p.y + sizeY, p.z), Vector3D(rightBottom, p.y + sizeY, p.z), texturePos);
+		drawSpriteNoRectangle(tSprite.mTexture, Vector3D(leftTop, p.y, p.z), Vector3D(rightTop, p.y, p.z), Vector3D(leftBottom, p.y + sizeY, p.z), Vector3D(rightBottom, p.y + sizeY, p.z), getPieceTextureRectangle(texturePos, pieceScale));
+	}
+	else if (pieceScale > 1) {
+		// In texels, drawn that many times bigger from its corner.
+		const auto pieceTexturePos = getPieceTextureRectangle(texturePos, pieceScale);
+		const float sizeX = float(abs(texturePos.bottomRight.x - texturePos.topLeft.x) + 1);
+		const float sizeY = float(abs(texturePos.bottomRight.y - texturePos.topLeft.y) + 1);
+		const float texelsX = float(abs(pieceTexturePos.bottomRight.x - pieceTexturePos.topLeft.x) + 1);
+		const float texelsY = float(abs(pieceTexturePos.bottomRight.y - pieceTexturePos.topLeft.y) + 1);
+		scaleDrawing2D(Vector2D(sizeX / texelsX, sizeY / texelsY), p.xy() + gMugenAnimationHandler.mPixelCenter);
+		drawSprite(tSprite.mTexture, p, pieceTexturePos);
 	}
 	else {
 		drawSprite(tSprite.mTexture, p, texturePos);

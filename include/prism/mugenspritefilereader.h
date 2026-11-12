@@ -11,6 +11,9 @@ namespace prism {
 typedef struct {
 	Vector2DI mOffset;
 	TextureData mTexture;
+	// Sprite pixels per texel: above 1 for a sprite made smaller as it was
+	// read (setMugenSpriteFileReaderDownscale); its offset is the sprite's.
+	int mScale = 1;
 } MugenSpriteFileSubSprite;
 
 typedef struct {
@@ -57,6 +60,10 @@ void setMugenSpriteFileReaderToBuffer();
 void setMugenSpriteFileReaderToFileOperations();
 void setMugenSpriteFileReaderToUsePalette(int tPaletteID);
 void setMugenSpriteFileReaderToNotUsePalette();
+// [3DS] The sprites read from now on made this many times smaller (1: as
+// they are): a 1280x720 stage's are drawn at a third of their size.
+void setMugenSpriteFileReaderDownscale(int tFactor);
+int getMugenSpriteFileReaderDownscale();
 void setMugenSpriteFileReaderCustomFunctionsAndForceARGB16(TextureData(*mCustomLoadTextureFromARGB16Buffer)(const Buffer&, int, int), TextureData(*mCustomLoadTextureFromARGB32Buffer)(const Buffer&, int, int), TextureData(*mCustomLoadPalettedTextureFrom8BitBuffer)(const Buffer&, int, int, int));
 void setMugenSpriteFileReaderSubTextureSplit(int tSubTextureSplitMin, int tSubTextureSplitMax);
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)

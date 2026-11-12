@@ -181,6 +181,8 @@ static struct {
 	// default values chosen with dolmexica baldhead character special attack stress test, equal values ensure no texture memory fragmentation when only using mugen sprites
 	int mSubTextureSplitMin = 64;
 	int mSubTextureSplitMax = 64;
+
+	int mDownscale = 1;
 } gPrismMugenSpriteFileReaderData;
 
 static uint32_t get2DBufferIndex(uint32_t i, uint32_t j, uint32_t w) {
@@ -556,6 +558,34 @@ std::vector<SubImageBuffer> breakImageBufferUpIntoMultipleBuffers(const Buffer& 
 	return ret;
 }
 
+// A smaller copy of an 8-bit (palette index) image: each k by k block's
+// middle pixel (indices cannot be averaged).
+static Buffer downscale8BitBufferAndReturnOwnedBuffer(const Buffer& b, int tBytesPerLine, int tWidth, int tHeight, int tFactor, int* oWidth, int* oHeight) {
+	const int w = (tWidth + tFactor - 1) / tFactor;
+	const int h = (tHeight + tFactor - 1) / tFactor;
+	uint8_t* dst = (uint8_t*)allocMemory(w * h);
+	const uint8_t* src = (const uint8_t*)b.mData;
+	for (int y = 0; y < h; y++) {
+		const int sy = min(y * tFactor + tFactor / 2, tHeight - 1);
+		for (int x = 0; x < w; x++) {
+			const int sx = min(x * tFactor + tFactor / 2, tWidth - 1);
+			dst[y * w + x] = src[sy * tBytesPerLine + sx];
+		}
+	}
+	*oWidth = w;
+	*oHeight = h;
+	return makeBufferOwned(dst, w * h);
+}
+
+// Sprite pixels per texel for the pieces of an image made k times smaller:
+// their offsets back in the sprite's own pixels.
+static void setSubSpritesDownscaled(std::vector<MugenSpriteFileSubSprite>& tSubSprites, int tFactor) {
+	for (auto& subSprite : tSubSprites) {
+		subSprite.mOffset = Vector2DI(subSprite.mOffset.x * tFactor, subSprite.mOffset.y * tFactor);
+		subSprite.mScale = tFactor;
+	}
+}
+
 static void freeSubImageBufferList(std::vector<SubImageBuffer>& tBufferList) {
 	for (auto& buffer : tBufferList)
 	{
@@ -582,6 +612,83 @@ static void readPNGDataFromInputStream(png_structp png_ptr, png_bytep outBytes, 
 		recoverFromError();
 	}
 	readFromBufferPointer(outBytes, &caller->p, uint32_t(byteCountToRead));
+}
+
+// [3DS] A 32-bit image read k times smaller, row by row (each k by k block's
+// average, weighted by its alpha): its full size is never in memory at
+// once (a 3072x2100 stage background: 25 MB).
+static Buffer parseRGBAPNGDownscaled(png_structp* png_ptr, png_infop* info_ptr, int tHasAlpha, int tIsPaletted, int width, int height, int tFactor)
+{
+	const int w = (width + tFactor - 1) / tFactor;
+	const int h = (height + tFactor - 1) / tFactor;
+	uint8_t* dst = (uint8_t*)allocMemory(w * h * 4);
+	const auto bytesPerRow = png_get_rowbytes(*png_ptr, *info_ptr);
+	uint8_t* rowData = (uint8_t*)allocMemory(int(bytesPerRow));
+	uint32_t* sums = (uint32_t*)allocMemory(w * 5 * sizeof(uint32_t));   // b*a, g*a, r*a, a, pixels
+
+	png_colorp pngPalette = NULL;
+	int palAmount = 0;
+	png_bytep transAlpha = NULL;
+	int transAmount = 0;
+	png_color_16p transColor = NULL;
+	if (tIsPaletted) {
+		png_get_PLTE(*png_ptr, *info_ptr, &pngPalette, &palAmount);
+		png_get_tRNS(*png_ptr, *info_ptr, &transAlpha, &transAmount, &transColor);
+	}
+
+	for (int y = 0; y < h; y++) {
+		memset(sums, 0, w * 5 * sizeof(uint32_t));
+		for (int j = 0; j < tFactor; j++) {
+			const int sourceRow = y * tFactor + j;
+			if (sourceRow >= height) break;
+			png_read_row(*png_ptr, (png_bytep)rowData, NULL);
+			int byteIndex = 0;
+			for (int x = 0; x < width; x++) {
+				uint32_t r, g, b, a;
+				if (tIsPaletted) {
+					const int index = rowData[byteIndex++];
+					if (index < palAmount) {
+						r = pngPalette[index].red;
+						g = pngPalette[index].green;
+						b = pngPalette[index].blue;
+					}
+					else {
+						r = g = b = 0;
+					}
+					a = (transAmount == 0 || index >= transAmount) ? 255 : transAlpha[index];
+				}
+				else {
+					r = rowData[byteIndex++];
+					g = rowData[byteIndex++];
+					b = rowData[byteIndex++];
+					a = tHasAlpha ? rowData[byteIndex++] : 255;
+				}
+				uint32_t* sum = sums + (x / tFactor) * 5;
+				sum[0] += b * a;
+				sum[1] += g * a;
+				sum[2] += r * a;
+				sum[3] += a;
+				sum[4]++;
+			}
+		}
+		for (int x = 0; x < w; x++) {
+			const uint32_t* sum = sums + x * 5;
+			uint8_t* pixel = dst + (y * w + x) * 4;
+			if (!sum[3]) {
+				pixel[0] = pixel[1] = pixel[2] = pixel[3] = 0;
+				continue;
+			}
+			pixel[0] = (uint8_t)(sum[0] / sum[3]);
+			pixel[1] = (uint8_t)(sum[1] / sum[3]);
+			pixel[2] = (uint8_t)(sum[2] / sum[3]);
+			pixel[3] = (uint8_t)(sum[3] / sum[4]);
+		}
+	}
+	// The rows left of a last, incomplete block were read above; any others
+	// (none) would be left unread, which libpng allows.
+	freeMemory(sums);
+	freeMemory(rowData);
+	return makeBufferOwned(dst, w * h * 4);
 }
 
 static Buffer parseRGBAPNG(png_structp* png_ptr, png_infop* info_ptr, int tHasAlpha, int width, int height)
@@ -690,7 +797,7 @@ static Buffer parsePalettedPNGWithoutPalette(png_structp* png_ptr, png_infop* in
 	return makeBufferOwned(dst, width * height);
 }
 
-static Buffer loadBufferFromRawPNGBuffer(const Buffer& tRawPNGBuffer, int tWidth, int tHeight, int tIsUsingPngPalette) {
+static Buffer loadBufferFromRawPNGBuffer(const Buffer& tRawPNGBuffer, int tWidth, int tHeight, int tIsUsingPngPalette, int tDownscale = 1) {
 	BufferPointer p = getBufferPointer(tRawPNGBuffer);
 	
 	uint8_t* pngSignature = (uint8_t*)p;
@@ -748,7 +855,10 @@ static Buffer loadBufferFromRawPNGBuffer(const Buffer& tRawPNGBuffer, int tWidth
 	}
 
 	Buffer ret;
-	if (colorType == PNG_COLOR_TYPE_RGB) {
+	if (tDownscale > 1 && (colorType == PNG_COLOR_TYPE_RGB || colorType == PNG_COLOR_TYPE_RGB_ALPHA || (colorType == PNG_COLOR_TYPE_PALETTE && tIsUsingPngPalette))) {
+		ret = parseRGBAPNGDownscaled(&png_ptr, &info_ptr, colorType == PNG_COLOR_TYPE_RGB_ALPHA, colorType == PNG_COLOR_TYPE_PALETTE, width, height, tDownscale);
+	}
+	else if (colorType == PNG_COLOR_TYPE_RGB) {
 		ret = parseRGBAPNG(&png_ptr, &info_ptr, 0, width, height);
 	}
 	else if (colorType == PNG_COLOR_TYPE_RGB_ALPHA) {
@@ -776,8 +886,19 @@ static Buffer loadBufferFromRawPNGBuffer(const Buffer& tRawPNGBuffer, int tWidth
 }
 
 static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawAndPaletteBufferGeneral(Buffer& tRawImageBuffer, const Buffer& tPaletteBuffer, int tIsUsingPaletteBuffer, int tWidth, int tHeight, int tBytesPerLine, const Vector2D& tAxisOffset) {
-	auto subImageList = breakImageBufferUpIntoMultipleBuffers(tRawImageBuffer, tBytesPerLine, tWidth, tHeight, 1);
-	freeBuffer(tRawImageBuffer);
+	const int downscale = gPrismMugenSpriteFileReaderData.mDownscale;
+	std::vector<SubImageBuffer> subImageList;
+	if (downscale > 1) {
+		int width, height;
+		Buffer smaller = downscale8BitBufferAndReturnOwnedBuffer(tRawImageBuffer, tBytesPerLine, tWidth, tHeight, downscale, &width, &height);
+		freeBuffer(tRawImageBuffer);
+		subImageList = breakImageBufferUpIntoMultipleBuffers(smaller, width, width, height, 1);
+		freeBuffer(smaller);
+	}
+	else {
+		subImageList = breakImageBufferUpIntoMultipleBuffers(tRawImageBuffer, tBytesPerLine, tWidth, tHeight, 1);
+		freeBuffer(tRawImageBuffer);
+	}
 
 	std::vector<MugenSpriteFileSubSprite> textures;
 	if (tIsUsingPaletteBuffer) {
@@ -787,6 +908,7 @@ static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawAndPaletteBufferGen
 		textures = loadTextureFromRawImageList1bpp(subImageList);
 	}
 	freeSubImageBufferList(subImageList);
+	if (downscale > 1) setSubSpritesDownscaled(textures, downscale);
 
 	return makeMugenSpriteFileSprite(textures, makeTextureSize(tWidth, tHeight), tAxisOffset);
 }
@@ -813,14 +935,18 @@ static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawPNGBuffer(Buffer& t
 	}
 	else
 	{
-		Buffer argb32Buffer = loadBufferFromRawPNGBuffer(tRawPNGBuffer, tBytesPerLine, tHeight, 1);
+		const int downscale = gPrismMugenSpriteFileReaderData.mDownscale;
+		Buffer argb32Buffer = loadBufferFromRawPNGBuffer(tRawPNGBuffer, tBytesPerLine, tHeight, 1, downscale);
 		freeBuffer(tRawPNGBuffer);
 
-		auto subImageList = breakImageBufferUpIntoMultipleBuffers(argb32Buffer, tBytesPerLine, tWidth, tHeight, 4);
+		const int width = (tWidth + downscale - 1) / downscale;
+		const int height = (tHeight + downscale - 1) / downscale;
+		auto subImageList = breakImageBufferUpIntoMultipleBuffers(argb32Buffer, downscale > 1 ? width : tBytesPerLine, width, height, 4);
 		freeBuffer(argb32Buffer);
 
 		auto textures = loadTextureFromImageARGB32List(subImageList);
 		freeSubImageBufferList(subImageList);
+		if (downscale > 1) setSubSpritesDownscaled(textures, downscale);
 
 		return makeMugenSpriteFileSprite(textures, makeTextureSize(tWidth, tHeight), tAxisOffset);
 	}
@@ -981,7 +1107,7 @@ static FileHandler getN3DSStreamFile(const std::string* tPath) {
 }
 
 static Buffer decodeLZ5BufferAndReturnOwnedBuffer(const Buffer& b, uint32_t tFinalSize);
-static Buffer loadBufferFromRawPNGBuffer(const Buffer& tRawPNGBuffer, int tWidth, int tHeight, int tIsUsingPngPalette);
+static Buffer loadBufferFromRawPNGBuffer(const Buffer& tRawPNGBuffer, int tWidth, int tHeight, int tIsUsingPngPalette, int tDownscale);
 
 // The last sprite read whole, kept for its other pieces (a big one is cut
 // in several: each read it whole from the card, 17 ms a piece).
@@ -1550,7 +1676,7 @@ static int loadN3DSSpriteStreamUnguarded(N3DSSpriteStream* e) {
 		break;
 	}
 	case N3DS_STREAM_PNG8:
-		image = loadBufferFromRawPNGBuffer(makeBuffer(data, e->mLength), e->mBytesPerLine, e->mHeight, 0);
+		image = loadBufferFromRawPNGBuffer(makeBuffer(data, e->mLength), e->mBytesPerLine, e->mHeight, 0, 1);
 		break;
 	}
 	int isKept = 0;
@@ -1753,7 +1879,14 @@ static MugenSpriteFileSprite loadTextureFromPCXBuffer(MugenSpriteFile* tDst, int
 	}
 
 #ifdef N3DS_HEAP_GUARD
-	if (gN3DSPCXHeaderOnlyLength || !hasN3DSHeapRoomForSprite((size_t)pcxImageSize * 3)) {
+	// One read smaller (a high resolution stage's): needs its 8-bit pixels and
+	// a ninth or so more; with no room for that, left out (not streamed).
+	if (gPrismMugenSpriteFileReaderData.mDownscale > 1 && !gN3DSPCXHeaderOnlyLength) {
+		if (!hasN3DSHeapRoomForSprite((size_t)pcxImageSize + (size_t)pcxImageSize / 2)) {
+			return makeMugenSpriteFileSprite(std::vector<MugenSpriteFileSubSprite>(), makeTextureSize(w, h), tAxisOffset);
+		}
+	}
+	else if (gN3DSPCXHeaderOnlyLength || !hasN3DSHeapRoomForSprite((size_t)pcxImageSize * 3)) {
 #if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
 		if (getenv("N3DS_SIM_TRACE_LEFT_OUT")) fprintf(stderr, "n3dssim: streamed %d (%dx%d)\n", gPCXSpriteGroup, w, h);
 #endif
@@ -1918,7 +2051,8 @@ static void loadSingleSFFFileAndInsertIntoSpriteFile(const SFFSubFileHeader& sub
 #else
 		static const int isForcedHeaderOnly = 0;
 #endif
-		if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && length > sizeof(PCXHeader) + 256 * 3
+		// (Not one made smaller as it is read: those are not streamed.)
+		if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && gPrismMugenSpriteFileReaderData.mDownscale == 1 && length > sizeof(PCXHeader) + 256 * 3
 			&& ((isForcedHeaderOnly && length >= 16 * 1024) || (length >= 256 * 1024
 			&& !hasN3DSHeapRoomInOnePiece(size_t(length) + 512 * 1024, 1) && (letN3DSStreamedPixelsGo(0), !hasN3DSHeapRoomInOnePiece(size_t(length) + 512 * 1024, 1))))) {
 			const int paletteSize = isUsingOwnPalette ? 256 * 3 : 0;
@@ -2329,10 +2463,19 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 #ifdef N3DS_HEAP_GUARD
 	// A PNG is decoded to 32 bits and copied once more in pieces (twice its
 	// pixels in 4 bytes), whatever its depth; the others, its 8-bit pixels.
-	if ((isPaletted || isRawPNG) && (!hasN3DSHeapRoomForSprite((size_t)sprite.mWidth * sprite.mHeight * (isRawPNG ? 8 : 3) + sprite.mDataLength)
-		|| !hasN3DSHeapRoomForSpriteBlocks(sprite.mDataLength, (size_t)sprite.mWidth * sprite.mHeight * (isRawPNG ? 4 : 1)))) {
+	// One read smaller (a high resolution stage's): a 32-bit PNG needs only
+	// its smaller size twice (read row by row), an 8-bit one its pixels once
+	// and the smaller copy; with no room, left out (not streamed).
+	const int downscale = gPrismMugenSpriteFileReaderData.mDownscale;
+	const size_t pixels = (size_t)sprite.mWidth * sprite.mHeight;
+	const size_t smallerPixels = pixels / (size_t(downscale) * downscale) + 1;
+	const int isReadSmallerPNG32 = downscale > 1 && isRawPNG && !(sprite.mFormat == 10 && sprite.mColorDepth == 8);
+	const size_t neededForSprite = downscale > 1 ? (isReadSmallerPNG32 ? smallerPixels * 8 : pixels + smallerPixels * 3) + sprite.mDataLength : pixels * (isRawPNG ? 8 : 3) + sprite.mDataLength;
+	const size_t neededForBlocks = downscale > 1 ? (isReadSmallerPNG32 ? smallerPixels * 4 : pixels) : pixels * (isRawPNG ? 4 : 1);
+	if ((isPaletted || isRawPNG) && (!hasN3DSHeapRoomForSprite(neededForSprite)
+		|| !hasN3DSHeapRoomForSpriteBlocks(sprite.mDataLength, neededForBlocks))) {
 		// Paletted ones read again from the file when drawn; the others left out.
-		const int kind = sprite.mFormat == 0 ? N3DS_STREAM_RAW : sprite.mFormat == 2 ? N3DS_STREAM_RLE8 : sprite.mFormat == 4 ? N3DS_STREAM_LZ5 : sprite.mFormat == 10 ? N3DS_STREAM_PNG8 : -1;
+		const int kind = downscale > 1 ? -1 : sprite.mFormat == 0 ? N3DS_STREAM_RAW : sprite.mFormat == 2 ? N3DS_STREAM_RLE8 : sprite.mFormat == 4 ? N3DS_STREAM_LZ5 : sprite.mFormat == 10 ? N3DS_STREAM_PNG8 : -1;
 		if (kind >= 0 && palette < int(tDst->mPalettes.size())) {
 			gN3DSSpritesLeftOut--;
 			const Buffer* paletteBuffer = (gPrismMugenSpriteFileReaderData.mIsUsingRealPalette && palette == 0) ? NULL : &tDst->mPalettes[palette].mBuffer;
@@ -2833,6 +2976,16 @@ void setMugenSpriteFileReaderToUsePalette(int tPaletteID)
 {
 	gPrismMugenSpriteFileReaderData.mIsUsingRealPalette = 1;
 	gPrismMugenSpriteFileReaderData.mPaletteID = tPaletteID;
+}
+
+void setMugenSpriteFileReaderDownscale(int tFactor)
+{
+	gPrismMugenSpriteFileReaderData.mDownscale = tFactor < 1 ? 1 : tFactor;
+}
+
+int getMugenSpriteFileReaderDownscale()
+{
+	return gPrismMugenSpriteFileReaderData.mDownscale;
 }
 
 void setMugenSpriteFileReaderToNotUsePalette()
