@@ -101,7 +101,12 @@ namespace prism {
 		// (Chun Li HD's: 8 of 62 MB left, the other fighter not drawn, and
 		// with nothing left both screens and the sounds went wrong).
 		const size_t bytes = size_t(powerOfTwoAtLeast(tWidth)) * powerOfTwoAtLeast(tHeight) * (tFormat == GPU_RGBA8 ? 4 : 2);
+#ifdef N3DS_LINEAR_DIAG
+		// The diagnosis as prueba 95 was: no reserve, the memory run out.
+		if (0) {
+#else
 		if (linearSpaceFree() < bytes + getN3DSTextureLoadReserve()) {
+#endif
 			logWarning("Out of the texture (linear) memory kept for the rest: a sprite left out.");
 			texture->mIsInitialized = 0;
 			return ret;

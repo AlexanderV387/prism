@@ -86,4 +86,10 @@ namespace prism {
 	// slot 0 the main thread's, each other thread its own slot (1 to 3).
 	void installN3DSExceptionHandler(int tSlot, const char* tThreadName);
 
+#ifdef N3DS_LINEAR_DIAG
+	// The linear memory's guards checked (3ds/lineardiag_3ds.cpp): the game
+	// stops on the first one written over.
+	void checkN3DSLinearGuards(const char* tWhen);
+#endif
+
 }

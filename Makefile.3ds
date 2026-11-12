@@ -14,8 +14,16 @@ OBJS += 3ds/system_3ds.o 3ds/drawing_3ds.o 3ds/texture_3ds.o 3ds/log_3ds.o 3ds/p
 3ds/input_3ds.o 3ds/screeneffect_3ds.o \
 3ds/sound_3ds.o 3ds/soundeffect_3ds.o 3ds/thread_3ds.o 3ds/windowfocusscreen_3ds.o
 
+OBJS += 3ds/lineardiag_3ds.o
+
 OBJDIR = build_3ds
 BINDIR = bin_3ds
+# LINEAR_DIAG=1: the linear memory's diagnosis (3ds/lineardiag_3ds.cpp), in
+# their own directories.
+ifdef LINEAR_DIAG
+OBJDIR = build_3ds_diag
+BINDIR = bin_3ds_diag
+endif
 N3DS_OBJS = $(addprefix $(OBJDIR)/,$(OBJS))
 
 DEVKITPRO ?= /opt/devkitpro
@@ -27,6 +35,9 @@ ARCH = -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 CXXFLAGS = $(ARCH) -std=gnu++17 -fsigned-char -fpermissive -O2 -g -mword-relocations -ffunction-sections \
 	-Wno-write-strings -D__3DS__ -Iinclude -Ilinux/shim -I$(OBJDIR)/3ds \
 	-I$(DEVKITPRO)/libctru/include -I$(DEVKITPRO)/portlibs/3ds/include
+ifdef LINEAR_DIAG
+CXXFLAGS += -DN3DS_LINEAR_DIAG
+endif
 
 all: $(BINDIR)/libprism.a
 

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include "prism/n3dsperf.h"
+#include "prism3ds.h"
 #include "prism3dsperf.h"
 
 #include <stdio.h>
@@ -355,6 +356,11 @@ namespace prism {
 		// Written at once before each file read while loading: a game that
 		// stops without a word (no error screen) leaves where it was.
 		if (strstr(text, "Loading") || strstr(text, "Unloading handled screen")) flushPerf();
+#ifdef N3DS_LINEAR_DIAG
+		// The linear memory's guards at each step of a load too (nothing is
+		// drawn while loading).
+		if (strstr(text, "Loading") || strstr(text, "Show screen") || strstr(text, "sprites read")) checkN3DSLinearGuards("a load step");
+#endif
 
 		if (strstr(text, "Show screen")) {
 			endLoad();

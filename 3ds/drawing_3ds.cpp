@@ -292,6 +292,11 @@ namespace prism {
 		gFrameSprites = gFrameBatches = 0;
 		gN3DSDrawingData.mIsFrameStarted = 1;
 		advanceN3DSTextureFrame();
+#ifdef N3DS_LINEAR_DIAG
+		// The linear memory's guards, twice a second (3ds/lineardiag_3ds.cpp).
+		static unsigned int diagnosedFrames = 0;
+		if (!(++diagnosedFrames % 30)) checkN3DSLinearGuards("a frame's start");
+#endif
 		// In full width, the game over the whole screen; otherwise black
 		// around the game's screen (as the PC's window, which is just its
 		// size): its background color and sprites only inside it.
