@@ -81,6 +81,8 @@ namespace prism {
 	// A new texture of the image's size, its texels cleared. Without the
 	// memory for it, one that is never drawn (and a warning, counted in the
 	// compatibility log): the game goes on, short of that sprite.
+	static size_t getN3DSTextureLoadReserve();
+
 	static TextureData makeTexture(int tWidth, int tHeight, GPU_TEXCOLOR tFormat) {
 		TextureData ret;
 		ret.mTextureSize.x = tWidth;
@@ -94,6 +96,16 @@ namespace prism {
 		}
 
 		Texture texture = (Texture)ret.mTexture->mData;
+		// The linear memory kept for the rest (as for paletted ones): these
+		// are never let go, a high resolution character's took all of it
+		// (Chun Li HD's: 8 of 62 MB left, the other fighter not drawn, and
+		// with nothing left both screens and the sounds went wrong).
+		const size_t bytes = size_t(powerOfTwoAtLeast(tWidth)) * powerOfTwoAtLeast(tHeight) * (tFormat == GPU_RGBA8 ? 4 : 2);
+		if (linearSpaceFree() < bytes + getN3DSTextureLoadReserve()) {
+			logWarning("Out of the texture (linear) memory kept for the rest: a sprite left out.");
+			texture->mIsInitialized = 0;
+			return ret;
+		}
 		if (!C3D_TexInit(&texture->mTex, powerOfTwoAtLeast(tWidth), powerOfTwoAtLeast(tHeight), tFormat)) {
 			logWarning("Out of texture (linear) memory: a sprite left out.");
 			texture->mIsInitialized = 0;
@@ -548,6 +560,7 @@ namespace prism {
 	// the second its share: Wonder Woman took 47 MB, Galactus got 4 KB and
 	// was drawn in pieces); 0 for the usual 8 MB.
 	void setN3DSTextureLoadReserve(size_t tReserve) { LOAD_RESERVE = tReserve > LOAD_RESERVE_DEFAULT ? tReserve : LOAD_RESERVE_DEFAULT; }
+	static size_t getN3DSTextureLoadReserve() { return LOAD_RESERVE; }
 	static const size_t DRAW_RESERVE = 3 * 1024 * 1024;
 
 	static int makePalettedTexels(Texture tTexture, int tWidth, int tHeight, int tIsEvicting) {
