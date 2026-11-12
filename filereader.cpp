@@ -182,6 +182,7 @@ namespace prism {
 		FileReaderWindow mWindows[FILE_READER_WINDOW_AMOUNT];
 		uint32_t mUseCounter;
 		int mIsOver;
+		int mIsReadingExactly;   // buffers not in a window read as they are, not a window filled
 	} WindowedFileReaderData;
 
 	static void initWindowedFileReader(FileReader* tReader, const char* tPath) {
@@ -209,6 +210,7 @@ namespace prism {
 		}
 		data->mUseCounter = 0;
 		data->mIsOver = 0;
+		data->mIsReadingExactly = 0;
 		tReader->mData = data;
 	}
 
@@ -287,7 +289,7 @@ namespace prism {
 	static Buffer readWindowedFileReaderBuffer(FileReader* tReader, uint32_t tSize) {
 		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
 		FileReaderWindow* window = findWindow(data, data->mPosition, tSize);
-		if (!window && tSize < data->mWindowSize) {
+		if (!window && tSize < data->mWindowSize && !data->mIsReadingExactly) {
 			window = fillWindow(data, data->mPosition);
 			if (!(data->mPosition + tSize <= window->mStart + window->mLength)) window = NULL;
 		}
@@ -314,6 +316,14 @@ namespace prism {
 	static int isWindowedFileReaderOver(FileReader* tReader) {
 		WindowedFileReaderData* data = (WindowedFileReaderData*)tReader->mData;
 		return data->mIsOver;
+	}
+
+	// A windowed reader's buffers outside its windows read as they are (the
+	// sprites of a file read here and there: a window each was most of the
+	// file again), or into a window filled (the default).
+	void setWindowedFileReaderReadingExactly(FileReader* tReader, int tIsReadingExactly) {
+		if (tReader->mInit != initWindowedFileReader) return;
+		((WindowedFileReaderData*)tReader->mData)->mIsReadingExactly = tIsReadingExactly;
 	}
 
 	FileReader getWindowedFileFileReader() {

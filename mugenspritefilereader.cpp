@@ -2235,6 +2235,162 @@ static void logSingleSFFSubFile(const SFFSubFileHeader& tSubHeader) {
 	debugFormat("[MugenSpriteFileReader] sff sprite %d: group %d image %d length %d linkedTo %d", gLoadedSubFileAmount - 1, (int)tSubHeader.mGroup, (int)tSubHeader.mImage, (int)tSubHeader.mSubfileLength, (int)tSubHeader.mIndexOfPreciousSpriteCopy);
 }
 
+#if defined(N3DS_HEAP_GUARD) && (defined(__3DS__) || defined(N3DS_TEXTURE_SIM))
+// [3DS] A big SFF v1's index (each sprite's place, header, PCX header and
+// palette) kept in cache/ after its first load: the next ones neither go
+// through the whole file to find its sprites (New Kyouki's 81 MB: 10 s of
+// the card for each) nor read the pixels of those streamed (read again when
+// drawn, 1737 of his 2125); the others read as they are. Made again when the
+// file's size or sprite amount is not the index's, or one not finished.
+static const uint32_t N3DS_SFF1_INDEX_MAGIC = 0x31584453;   // "SDX1"
+
+typedef struct {
+	uint32_t mMagic, mSourceSize, mImageAmount, mFirstFileOffset, mEntryAmount, mPaletteBytes;
+} N3DSSFF1IndexHeader;
+
+typedef struct {
+	uint32_t mOffset;               // of its sub-file header
+	SFFSubFileHeader mSubHeader;
+	PCXHeader mPCXHeader;           // (zero for a linked one)
+	int32_t mPaletteOffset;         // in the palettes, -1 if none kept
+} N3DSSFF1IndexEntry;
+
+static struct {
+	int mIsReading = 0;              // the index used for this load
+	int mIsWriting = 0;              // the index being made
+	std::string mPath;
+	N3DSSFF1IndexHeader mHeader;
+	std::vector<N3DSSFF1IndexEntry> mEntries;
+	std::vector<uint8_t> mPalettes;
+	uint32_t mSkipped = 0;          // streamed without its pixels read
+} gN3DSSFF1Index;
+
+static void beginN3DSSFF1Index(const char* tPath, uint32_t tSourceSize, const SFFHeader& tHeader) {
+	auto& x = gN3DSSFF1Index;
+	x.mIsReading = x.mIsWriting = 0;
+	x.mEntries.clear();
+	x.mPalettes.clear();
+	x.mSkipped = 0;
+	const std::string directory = getN3DSDownscaleCacheDirectory();
+	if (directory.empty() || gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits || gPrismMugenSpriteFileReaderData.mDownscale != 1 || tSourceSize <= 2 * 1024 * 1024) return;
+	uint32_t hash = 2166136261u;
+	for (const char* p = tPath; *p; p++) hash = (hash ^ (uint8_t)*p) * 16777619u;
+	char name[64];
+	snprintf(name, sizeof(name), "/%08lx-%lu.sx1", (unsigned long)hash, (unsigned long)tSourceSize);
+	x.mPath = directory + name;
+	x.mHeader = { N3DS_SFF1_INDEX_MAGIC, tSourceSize, tHeader.mImageAmount, tHeader.mFirstFileOffset, 0, 0 };
+
+	if (FILE* file = fopen(x.mPath.c_str(), "rb")) {
+		static char readBuffer[64 * 1024];
+		setvbuf(file, readBuffer, _IOFBF, sizeof(readBuffer));
+		N3DSSFF1IndexHeader header;
+		int isValid = fread(&header, sizeof(header), 1, file) == 1 && header.mMagic == N3DS_SFF1_INDEX_MAGIC && header.mSourceSize == tSourceSize
+			&& header.mImageAmount == tHeader.mImageAmount && header.mFirstFileOffset == tHeader.mFirstFileOffset
+			&& header.mEntryAmount && header.mEntryAmount <= 100000 && header.mPaletteBytes <= 100000u * 768;
+		if (isValid) {
+			x.mEntries.resize(header.mEntryAmount);
+			x.mPalettes.resize(header.mPaletteBytes);
+			isValid = fread(x.mEntries.data(), sizeof(N3DSSFF1IndexEntry), x.mEntries.size(), file) == x.mEntries.size()
+				&& (x.mPalettes.empty() || fread(x.mPalettes.data(), 1, x.mPalettes.size(), file) == x.mPalettes.size());
+		}
+		for (const auto& entry : x.mEntries) {
+			if (!isValid) break;
+			if (entry.mOffset >= tSourceSize || entry.mPaletteOffset + 768 > (int32_t)x.mPalettes.size()) isValid = 0;
+		}
+		fclose(file);
+		if (isValid) {
+			x.mIsReading = 1;
+			return;
+		}
+		x.mEntries.clear();
+		x.mPalettes.clear();
+	}
+	x.mIsWriting = 1;
+}
+
+// Made: this sprite's part of the index (its data read whole, or its header
+// and palette only).
+static void addN3DSSFF1IndexEntry(uint32_t tOffset, const SFFSubFileHeader& tSubHeader, const Buffer& tPCXBuffer, int tIsHeaderOnly) {
+	auto& x = gN3DSSFF1Index;
+	if (!x.mIsWriting) return;
+	N3DSSFF1IndexEntry entry;
+	memset(&entry, 0, sizeof(entry));
+	entry.mOffset = tOffset;
+	entry.mSubHeader = tSubHeader;
+	entry.mPaletteOffset = -1;
+	if (tPCXBuffer.mData && tPCXBuffer.mLength >= sizeof(PCXHeader)) {
+		memcpy(&entry.mPCXHeader, tPCXBuffer.mData, sizeof(PCXHeader));
+		const uint8_t* palette = NULL;
+		if (tIsHeaderOnly && tPCXBuffer.mLength >= sizeof(PCXHeader) + 768) palette = (const uint8_t*)tPCXBuffer.mData + sizeof(PCXHeader);
+		else if (!tIsHeaderOnly && tPCXBuffer.mLength >= sizeof(PCXHeader) + 768) palette = (const uint8_t*)tPCXBuffer.mData + tPCXBuffer.mLength - 768;
+		if (palette && !tSubHeader.mHasSamePaletteAsPreviousImage) {
+			entry.mPaletteOffset = (int32_t)x.mPalettes.size();
+			x.mPalettes.insert(x.mPalettes.end(), palette, palette + 768);
+		}
+	}
+	x.mEntries.push_back(entry);
+}
+
+static void endN3DSSFF1Index(int tIsComplete) {
+	auto& x = gN3DSSFF1Index;
+	if (x.mIsWriting && tIsComplete && !x.mEntries.empty()) {
+		x.mHeader.mEntryAmount = (uint32_t)x.mEntries.size();
+		x.mHeader.mPaletteBytes = (uint32_t)x.mPalettes.size();
+		mkdir(getN3DSDownscaleCacheDirectory().c_str(), 0777);
+		const std::string temporary = x.mPath + ".new";
+		int isWritten = 0;
+		if (FILE* file = fopen(temporary.c_str(), "wb")) {
+			static char writeBuffer[64 * 1024];
+			setvbuf(file, writeBuffer, _IOFBF, sizeof(writeBuffer));
+			isWritten = fwrite(&x.mHeader, sizeof(x.mHeader), 1, file) == 1
+				&& fwrite(x.mEntries.data(), sizeof(N3DSSFF1IndexEntry), x.mEntries.size(), file) == x.mEntries.size()
+				&& (x.mPalettes.empty() || fwrite(x.mPalettes.data(), 1, x.mPalettes.size(), file) == x.mPalettes.size());
+			isWritten = !fclose(file) && isWritten;
+		}
+		remove(x.mPath.c_str());
+		if (!isWritten || rename(temporary.c_str(), x.mPath.c_str())) remove(temporary.c_str());
+	}
+	x.mIsReading = x.mIsWriting = 0;
+	std::vector<N3DSSFF1IndexEntry>().swap(x.mEntries);
+	std::vector<uint8_t>().swap(x.mPalettes);
+}
+
+// From the index: a sprite surely streamed (no room for its pixels by the
+// heap's last count) gets its header and palette from it, its pixels not
+// read; 0 for the others (read as before).
+static int getN3DSSFF1IndexHeaderOnly(const N3DSSFF1IndexEntry& tEntry, int tIsUsingOwnPalette, Buffer* oCompact) {
+	const PCXHeader& header = tEntry.mPCXHeader;
+	const uint32_t length = uint32_t(tEntry.mSubHeader.mSubfileLength);
+	if (length <= sizeof(PCXHeader) + 256 * 3 || header.mBitsPerPixel != 8 || header.mEncoding != 1) return 0;
+	if (tIsUsingOwnPalette && tEntry.mPaletteOffset < 0) return 0;
+	const int h = header.mMaxY - header.mMinY + 1;
+	if (h <= 0 || !header.mBytesPerLine) return 0;
+	const size_t needed = size_t(header.mBytesPerLine) * h * 3;
+	const size_t reserve = gN3DSSpriteHeapReserve + (needed >= N3DS_BIG_SPRITE_NEED ? N3DS_BIG_SPRITE_EXTRA_RESERVE : 0);
+#if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+	// As N3DS_SIM_PCX_HEADER_ONLY streams them without the index (the same
+	// sprites, to compare).
+	static const int isForcedHeaderOnly = getenv("N3DS_SIM_PCX_HEADER_ONLY") ? 1 : 0;
+	if (isForcedHeaderOnly && length >= 16 * 1024) {}
+	else
+#endif
+	if (gN3DSHeapUsed + needed + reserve <= __ctru_heap_size) return 0;
+	const int paletteSize = tIsUsingOwnPalette ? 256 * 3 : 0;
+	uint8_t* compact = (uint8_t*)allocMemory(sizeof(PCXHeader) + 256 * 3);
+	memcpy(compact, &header, sizeof(PCXHeader));
+	if (paletteSize) memcpy(compact + sizeof(PCXHeader), gN3DSSFF1Index.mPalettes.data() + tEntry.mPaletteOffset, paletteSize);
+	*oCompact = makeBufferOwned(compact, sizeof(PCXHeader) + paletteSize);
+	// As if it had been counted out of room (its stream counts it back in).
+	gN3DSSpritesLeftOut++;
+	gN3DSSFF1Index.mSkipped++;
+	return 1;
+}
+
+static const N3DSSFF1IndexEntry* gN3DSSFF1CurrentEntry;   // the sprite being loaded from the index
+static uint32_t gN3DSSFF1LastSkipped;   // for the load's log: the last file's
+static int gN3DSSFF1LastMode;          // 1 read from the index, 2 index made
+#endif
+
 static void loadSingleSFFFileAndInsertIntoSpriteFile(const SFFSubFileHeader& subHeader, MugenSpriteFile* tDst) {
 	logSingleSFFSubFile(subHeader);
 
@@ -2259,6 +2415,14 @@ static void loadSingleSFFFileAndInsertIntoSpriteFile(const SFFSubFileHeader& sub
 		static const int isForcedHeaderOnly = 0;
 #endif
 		// (Not one made smaller as it is read: those are not streamed.)
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+		if (gN3DSSFF1CurrentEntry && !gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && gPrismMugenSpriteFileReaderData.mDownscale == 1 && !tDst->mPalettes.empty()
+			&& getN3DSSFF1IndexHeaderOnly(*gN3DSSFF1CurrentEntry, isUsingOwnPalette, &pcxBuffer)) {
+			gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, gN3DSSubfileOffset + length);
+			gN3DSPCXHeaderOnlyLength = length;
+		}
+		else
+#endif
 		if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && gPrismMugenSpriteFileReaderData.mDownscale == 1 && length > sizeof(PCXHeader) + 256 * 3
 			&& ((isForcedHeaderOnly && length >= 16 * 1024) || (length >= 256 * 1024
 			&& !hasN3DSHeapRoomInOnePiece(size_t(length) + 512 * 1024, 1) && (letN3DSStreamedPixelsGo(0), !hasN3DSHeapRoomInOnePiece(size_t(length) + 512 * 1024, 1))))) {
@@ -2279,6 +2443,9 @@ static void loadSingleSFFFileAndInsertIntoSpriteFile(const SFFSubFileHeader& sub
 #else
 		Buffer pcxBuffer = gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, subHeader.mSubfileLength);
 #endif
+#if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+		addN3DSSFF1IndexEntry(gN3DSSubfileOffset - sizeof(SFFSubFileHeader), subHeader, pcxBuffer, gN3DSPCXHeaderOnlyLength != 0);
+#endif
 		if (isFirstImageWithActiveActFile) gIsOnPCXBasePalette = 1;
 		// A portrait's palette (group 9000) is its own: the sprites after it
 		// sharing "the previous palette" are the character's, drawn with the
@@ -2295,6 +2462,9 @@ static void loadSingleSFFFileAndInsertIntoSpriteFile(const SFFSubFileHeader& sub
 #endif
 	}
 	else {
+#if defined(N3DS_HEAP_GUARD) && (defined(__3DS__) || defined(N3DS_TEXTURE_SIM))
+		addN3DSSFF1IndexEntry(gPrismMugenSpriteFileReaderData.mReader.mGetCurrentOffset(&gPrismMugenSpriteFileReaderData.mReader) - sizeof(SFFSubFileHeader), subHeader, Buffer(), 0);
+#endif
 		texture = makeLinkedMugenSpriteFileSprite(subHeader.mIndexOfPreciousSpriteCopy, Vector2D(subHeader.mImageAxisXCoordinate, subHeader.mImageAxisYCoordinate));
 	}
 
@@ -2311,10 +2481,33 @@ static void removeAllPalettesExceptFirst(MugenSpriteFile* tDst) {
 	}
 }
 
+static void loadSingleSFFFileWithHeader(const SFFSubFileHeader& subHeader, MugenSpriteFile* tDst);
+static void loadSingleSFFFileWithHeaderAtDownscale(const SFFSubFileHeader& subHeader, MugenSpriteFile* tDst);
+
 static void loadSingleSFFFile(MugenSpriteFile* tDst) {
 	SFFSubFileHeader subHeader;
 
 	gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &subHeader, sizeof(SFFSubFileHeader));
+	loadSingleSFFFileWithHeader(subHeader, tDst);
+
+	if (!subHeader.mNextFilePosition) {
+		gPrismMugenSpriteFileReaderData.mReader.mSetOver(&gPrismMugenSpriteFileReaderData.mReader);
+	}
+	else {
+		gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, subHeader.mNextFilePosition);		
+	}
+}
+
+// A sprite whose sub-file header was read (the reader right after it).
+static void loadSingleSFFFileWithHeader(const SFFSubFileHeader& subHeader, MugenSpriteFile* tDst) {
+	// Portraits never read smaller (as for SFF v2's).
+	const int downscale = gPrismMugenSpriteFileReaderData.mDownscale;
+	if (subHeader.mGroup == 9000) gPrismMugenSpriteFileReaderData.mDownscale = 1;
+	loadSingleSFFFileWithHeaderAtDownscale(subHeader, tDst);
+	gPrismMugenSpriteFileReaderData.mDownscale = downscale;
+}
+
+static void loadSingleSFFFileWithHeaderAtDownscale(const SFFSubFileHeader& subHeader, MugenSpriteFile* tDst) {
 
 	verboseInteger(sizeof(SFFSubFileHeader));
 	verboseInteger(subHeader.mNextFilePosition);
@@ -2334,13 +2527,6 @@ static void loadSingleSFFFile(MugenSpriteFile* tDst) {
 		}
 #endif
 		loadSingleSFFFileAndInsertIntoSpriteFile(subHeader, tDst);
-	}
-
-	if (!subHeader.mNextFilePosition) {
-		gPrismMugenSpriteFileReaderData.mReader.mSetOver(&gPrismMugenSpriteFileReaderData.mReader);
-	}
-	else {
-		gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, subHeader.mNextFilePosition);		
 	}
 }
 
@@ -2414,11 +2600,32 @@ static MugenSpriteFile loadMugenSpriteFile1(int tHasPaletteFile, const char* tOp
 	gN3DSPortraitCache.mFound.clear();
 #endif
 
-	gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, header.mFirstFileOffset);
-	while (!gPrismMugenSpriteFileReaderData.mReader.mIsOver(&gPrismMugenSpriteFileReaderData.mReader)) {
-		loadSingleSFFFile(&ret);
-		if(gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && ret.mAllSprites.size() == 2) break;
+#if defined(N3DS_HEAP_GUARD) && (defined(__3DS__) || defined(N3DS_TEXTURE_SIM))
+	beginN3DSSFF1Index(gN3DSStreamPath->c_str(), uint32_t(getFileSize(gN3DSStreamPath->c_str())), header);
+	if (gN3DSSFF1Index.mIsReading) {
+		setWindowedFileReaderReadingExactly(&gPrismMugenSpriteFileReaderData.mReader, 1);
+		for (const auto& entry : gN3DSSFF1Index.mEntries) {
+			gN3DSSFF1CurrentEntry = &entry;
+			gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, entry.mOffset + sizeof(SFFSubFileHeader));
+			loadSingleSFFFileWithHeader(entry.mSubHeader, &ret);
+		}
+		gN3DSSFF1CurrentEntry = NULL;
+		setWindowedFileReaderReadingExactly(&gPrismMugenSpriteFileReaderData.mReader, 0);
 	}
+	else
+#endif
+	{
+		gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, header.mFirstFileOffset);
+		while (!gPrismMugenSpriteFileReaderData.mReader.mIsOver(&gPrismMugenSpriteFileReaderData.mReader)) {
+			loadSingleSFFFile(&ret);
+			if(gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && ret.mAllSprites.size() == 2) break;
+		}
+	}
+#if defined(N3DS_HEAP_GUARD) && (defined(__3DS__) || defined(N3DS_TEXTURE_SIM))
+	gN3DSSFF1LastSkipped = gN3DSSFF1Index.mSkipped;
+	gN3DSSFF1LastMode = gN3DSSFF1Index.mIsReading ? 1 : gN3DSSFF1Index.mIsWriting ? 2 : 0;
+	endN3DSSFF1Index(gLoadedSubFileAmount >= int(header.mImageAmount));
+#endif
 	// A file cut short (a copy to the SD card that did not finish): said in
 	// the logs, its missing sprites being nothing drawn.
 	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && gLoadedSubFileAmount < int(header.mImageAmount)) {
@@ -2742,6 +2949,22 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 	insertTextureIntoSpriteFile(tDst, e, sprite.mGroupNo, sprite.mItemNo);
 }
 
+// The portraits (group 9000) never read smaller: drawn at their own size by
+// the menus and the fight's bars, not at a high resolution character's scale
+// (Chun Li HD's face in her life bar was a few blurred blocks).
+static void loadSingleSprite2KeepingPortraitsWhole(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tHasPalette) {
+	const int downscale = gPrismMugenSpriteFileReaderData.mDownscale;
+	if (downscale > 1) {
+		const uint32_t position = gPrismMugenSpriteFileReaderData.mReader.mGetCurrentOffset(&gPrismMugenSpriteFileReaderData.mReader);
+		uint16_t group = 0;
+		gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &group, sizeof(group));
+		gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, position);
+		if (group == 9000) gPrismMugenSpriteFileReaderData.mDownscale = 1;
+	}
+	loadSingleSprite2(tHeader, tDst, tHasPalette);
+	gPrismMugenSpriteFileReaderData.mDownscale = downscale;
+}
+
 static void loadSprites2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tHasPalette) {
 	int i = 0;
 	gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, tHeader->mSpriteOffset);
@@ -2752,7 +2975,7 @@ static void loadSprites2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tHasPal
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 		setN3DSDownscaleCacheOrdinal(uint32_t(i));
 #endif
-		loadSingleSprite2(tHeader, tDst, tHasPalette);
+		loadSingleSprite2KeepingPortraitsWhole(tHeader, tDst, tHasPalette);
 #ifdef __3DS__
 		if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && tDst->mAllSprites.size() > spritesBefore) gN3DSPortraitCache.mFound.push_back(i);
 #endif
@@ -3005,6 +3228,8 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	int n3dsVariant = n3dsFileSize <= 2 * 1024 * 1024 ? N3DS_SPRITE_READ_WHOLE : N3DS_SPRITE_READ_WINDOWED;
 	gN3DSSpritesLeftOut = 0;
 	gN3DSStreamedSprites = 0;
+	gN3DSSFF1LastMode = 0;
+	gN3DSSFF1LastSkipped = 0;
 	gN3DSStreamPath = &*gN3DSStreamPaths.insert(std::string(tPath)).first;
 	gN3DSHeapUsedCheckedSprites = 0;
 	// Portraits found before: only a few reads, through a small buffer.
@@ -3020,6 +3245,8 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	const FileReader originalN3DSReader = gPrismMugenSpriteFileReaderData.mReader;
 	gN3DSSpritesLeftOut = 0;
 	gN3DSStreamedSprites = 0;
+	gN3DSSFF1LastMode = 0;
+	gN3DSSFF1LastSkipped = 0;
 	gN3DSStreamPath = &*gN3DSStreamPaths.insert(std::string(tPath)).first;
 	gN3DSHeapUsedCheckedSprites = 0;
 	if (getFileSize(tPath) > 2 * 1024 * 1024) gPrismMugenSpriteFileReaderData.mReader = getWindowedFileFileReader();
@@ -3063,6 +3290,7 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	endN3DSDownscaleCache();
 #endif
 #if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+	if (gN3DSSFF1LastMode) fprintf(stderr, "n3dssim: %s: sprite index %s, %u sprites streamed without their pixels read\n", tPath, gN3DSSFF1LastMode == 1 ? "read" : "made", gN3DSSFF1LastSkipped);
 	if (n3dsCacheMode != N3DS_DOWNSCALE_CACHE_OFF) fprintf(stderr, "n3dssim: %s: smaller sprites %s the cache: %u read, %u decoded\n", tPath, n3dsCacheMode == N3DS_DOWNSCALE_CACHE_READING ? "from" : "written to", n3dsCacheHits, n3dsCacheMisses);
 	gPrismMugenSpriteFileReaderData.mReader = originalN3DSReader;
 	if (gN3DSSpritesLeftOut) fprintf(stderr, "n3dssim: %s: %d sprites left out, no room in the heap\n", tPath, gN3DSSpritesLeftOut);
@@ -3080,6 +3308,8 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 			(gN3DSPerf.mReadBytes - n3dsBefore.mReadBytes) / 1024.0, tex, gN3DSPerf.mTextures - n3dsBefore.mTextures, total - io - tex);
 		if (gN3DSSpritesLeftOut) addN3DSPerfLine("  %d sprites left out: no room in the heap", gN3DSSpritesLeftOut);
 		if (gN3DSStreamedSprites) addN3DSPerfLine("  %u sprites streamed: read from the file when drawn", gN3DSStreamedSprites);
+		if (gN3DSSFF1LastMode == 1) addN3DSPerfLine("  sprite index from the cache: %u sprites streamed without their pixels read", gN3DSSFF1LastSkipped);
+		if (gN3DSSFF1LastMode == 2) addN3DSPerfLine("  sprite index written to the cache");
 		if (n3dsCacheMode == N3DS_DOWNSCALE_CACHE_READING) addN3DSPerfLine("  smaller sprites from the cache: %u read, %u decoded", n3dsCacheHits, n3dsCacheMisses);
 		if (n3dsCacheMode == N3DS_DOWNSCALE_CACHE_WRITING) addN3DSPerfLine("  smaller sprites written to the cache: %u", n3dsCacheMisses);
 	}
