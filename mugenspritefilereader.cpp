@@ -999,6 +999,11 @@ static void beginN3DSDownscaleCache(const char* tPath, uint32_t tSourceSize, int
 	c.mDownscale = uint32_t(tDownscale);
 
 	if (FILE* file = fopen(c.mPath.c_str(), "rb")) {
+		// Read through a 64 KB buffer: the default one (a kilobyte) made
+		// thousands of reads of the card (Estres Extremo's 4.4 MB took as
+		// long from the cache as decoding its PNGs).
+		static char readBuffer[64 * 1024];
+		setvbuf(file, readBuffer, _IOFBF, sizeof(readBuffer));
 		N3DSDownscaleCacheHeader header;
 		int isValid = fread(&header, sizeof(header), 1, file) == 1 && header.mMagic == N3DS_DOWNSCALE_CACHE_MAGIC
 			&& header.mSourceSize == tSourceSize && header.mDownscale == (uint32_t)tDownscale && header.mEntryAmount < 100000;
@@ -1052,7 +1057,17 @@ static int readN3DSDownscaleCacheSprite(Buffer* oBuffer, uint32_t tDataLength, i
 	const auto& entry = c.mEntries[c.mOrdinal];
 	const size_t length = size_t(tWidth) * tHeight * 4;
 	uint8_t* data = (uint8_t*)allocMemory(int(length));
-	if (fseek(c.mFile, entry.mOffset, SEEK_SET) || fread(data, 1, length, c.mFile) != length) {
+#ifdef __3DS__
+	const uint64_t readStart = getN3DSPerfTicks();
+#endif
+	const int isRead = !fseek(c.mFile, entry.mOffset, SEEK_SET) && fread(data, 1, length, c.mFile) == length;
+#ifdef __3DS__
+	// Counted as the card's time in the load's log.
+	gN3DSPerf.mReadTicks += getN3DSPerfTicks() - readStart;
+	gN3DSPerf.mReads++;
+	gN3DSPerf.mReadBytes += length;
+#endif
+	if (!isRead) {
 		freeMemory(data);
 		c.mMisses++;
 		return 0;
@@ -2702,10 +2717,10 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 	}
 	else if (isRawPNG) {
 		uint32_t originalPosition = gPrismMugenSpriteFileReaderData.mReader.mGetCurrentOffset(&gPrismMugenSpriteFileReaderData.mReader);
-		gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, getSpriteDataOffset(&sprite, tHeader));
-		uint16_t textureWidth, textureHeight;
-		gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &textureWidth, 2);
-		gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &textureHeight, 2);
+		// Past its 4 bytes of uncompressed size (not used), not read: read
+		// through a window, each one filled a window of the file (Estres
+		// Extremo's 50 sprites from the cache read 26 MB of the card so).
+		gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, getSpriteDataOffset(&sprite, tHeader) + 4);
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 		// Its smaller pixels in the cache: its PNG not read.
 		const int cacheDownscale = gPrismMugenSpriteFileReaderData.mDownscale;
