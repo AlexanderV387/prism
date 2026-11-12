@@ -52,6 +52,8 @@ namespace prism {
 
 	void initN3DSPerf();
 	void flushN3DSPerfOnError();
+	// Its lines written now (a step a crash could follow: the next file read).
+	void flushN3DSPerfNow();
 	void addN3DSPerfLine(const char* tFormat, ...);
 
 	// Ways of reading a sprite file: 0 small reads through newlib's buffer,

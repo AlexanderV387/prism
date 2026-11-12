@@ -7,6 +7,7 @@
 #include <exception>
 #include <new>
 #include <malloc.h>
+#include <signal.h>
 
 #include <3ds.h>
 
@@ -119,8 +120,21 @@ namespace prism {
 		if (!letN3DSStreamedPixelsGo(0)) throw std::bad_alloc();
 	}
 
+	// abort() from a library (libpng's error with no handler, ...): logged,
+	// then the game stops as on any other error, instead of newlib's silent
+	// return to the Homebrew Launcher.
+	static void abortSignalN3DS(int) {
+		signal(SIGABRT, SIG_DFL);
+		const unsigned usedKB = (unsigned)(mallinfo().uordblks / 1024);
+		const unsigned heapKB = (unsigned)(__ctru_heap_size / 1024);
+		const unsigned largestKB = (unsigned)(findLargestFreeHeapBlock() / 1024);
+		logErrorFormat("abort() called (a library stopped the game): heap %u KB used of %u KB, the biggest free piece %u KB, linear memory %u KB free.", usedKB, heapKB, largestKB, (unsigned)(linearSpaceFree() / 1024));
+		abortSystem();
+	}
+
 	void initSystem() {
 		if (gSystemN3DSData.mIsLoaded) return;
+		signal(SIGABRT, abortSignalN3DS);
 		std::set_terminate(terminateN3DS);
 		std::set_new_handler(newHandlerN3DS);
 		osSetSpeedupEnable(true);

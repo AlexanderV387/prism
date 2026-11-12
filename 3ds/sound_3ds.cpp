@@ -322,6 +322,8 @@ namespace prism {
 		getFullPath(path, tPath);
 		const char* fileExt = getFileExtension(path);
 
+		addN3DSPerfLine("  music %s: opening", path);
+		flushN3DSPerfNow();
 		LightLock_Lock(&gN3DSMusic.mLock);
 		int isOpen = 0;
 		if (fileExt && !strcasecmp(fileExt, "ogg")) isOpen = openOGG(path);

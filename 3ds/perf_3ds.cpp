@@ -336,6 +336,9 @@ namespace prism {
 		size_t length = strlen(line);
 		while (length && (line[length - 1] == '\n' || line[length - 1] == '\r')) line[--length] = '\0';
 		addN3DSPerfLine("%s", line);
+		// Written at once before each file read while loading: a game that
+		// stops without a word (no error screen) leaves where it was.
+		if (strstr(text, "Loading") || strstr(text, "Unloading handled screen")) flushPerf();
 
 		if (strstr(text, "Show screen")) {
 			endLoad();
@@ -374,6 +377,14 @@ namespace prism {
 	// On an error the game stops on: what was waiting written out (a fight's
 	// lines are otherwise written at the next load), the compatibility log too.
 	static void writeCompatLog();
+	void flushN3DSPerfNow() { flushPerf(); }
+
+	// Any exit (exit(), the HOME Menu's close): the lines not yet written.
+	static void flushPerfAtExit() {
+		addN3DSPerfLine("the game ended (exit)");
+		flushN3DSPerfOnError();
+	}
+
 	void flushN3DSPerfOnError() {
 		if (gPerf.mFrames) writeFrameStatistics();
 		flushPerf();
@@ -388,6 +399,7 @@ namespace prism {
 		if (FILE* errorLog = fopen(N3DS_ERROR_LOG_FILE, "wb")) fclose(errorLog);
 		gPerf.mFile = fopen(N3DS_PERF_FILE, "w");
 		setLogCallback(logCallback, NULL);
+		atexit(flushPerfAtExit);
 		addN3DSPerfLine("load-time log: time in ms since the start, then what happened");
 		addCPUSpeedLine();
 	}

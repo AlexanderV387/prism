@@ -797,6 +797,14 @@ static Buffer parsePalettedPNGWithoutPalette(png_structp* png_ptr, png_infop* in
 	return makeBufferOwned(dst, width * height);
 }
 
+// A libpng error (a broken image, or no room for its own memory): logged with
+// the heap's state, then the game stops on it as on any other error (libpng
+// itself would call abort(): back to the Homebrew Launcher without a word).
+static void pngErrorStopping(png_structp, png_const_charp tMessage) {
+	logErrorFormat("PNG error: %s", tMessage ? tMessage : "");
+	recoverFromError();
+}
+
 static Buffer loadBufferFromRawPNGBuffer(const Buffer& tRawPNGBuffer, int tWidth, int tHeight, int tIsUsingPngPalette, int tDownscale = 1) {
 	BufferPointer p = getBufferPointer(tRawPNGBuffer);
 	
@@ -808,7 +816,7 @@ static Buffer loadBufferFromRawPNGBuffer(const Buffer& tRawPNGBuffer, int tWidth
 	}
 
 	png_structp png_ptr = NULL;
-	png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+	png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, pngErrorStopping, NULL);
 
 	if (png_ptr == NULL) {
 		logError("Cannot create read struct.");
