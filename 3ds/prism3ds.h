@@ -82,4 +82,8 @@ namespace prism {
 	// The drawing's end, at exit (system_3ds.cpp).
 	void shutdownN3DSDrawing();
 
+	// The CPU exception handler for the thread calling it (system_3ds.cpp):
+	// slot 0 the main thread's, each other thread its own slot (1 to 3).
+	void installN3DSExceptionHandler(int tSlot, const char* tThreadName);
+
 }

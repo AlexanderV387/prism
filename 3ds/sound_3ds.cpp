@@ -13,6 +13,7 @@
 #include "prism/file.h"
 #include "prism/log.h"
 
+#include "prism3ds.h"
 #include "prism3dsperf.h"
 
 // [3DS] Music: MP3 (libmpg123), OGG (Tremor) and WAV files streamed to the
@@ -234,6 +235,7 @@ namespace prism {
 	}
 
 	static void musicThread(void*) {
+		installN3DSExceptionHandler(2, "music");
 		while (gN3DSMusic.mIsRunning) {
 			LightEvent_Wait(&gN3DSMusic.mWake);
 			LightLock_Lock(&gN3DSMusic.mLock);

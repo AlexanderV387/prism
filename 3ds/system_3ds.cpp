@@ -132,8 +132,60 @@ namespace prism {
 		abortSystem();
 	}
 
+	// A CPU exception (a bad memory access, a jump to a bad address, an
+	// undefined instruction): logged with where it happened (pc and lr, for
+	// the .elf), then the game stops as on any other error, instead of
+	// leaving without a word (two of the train's loads ended so: no Luma
+	// screen, nothing in the logs). Each thread has its own handler stack:
+	// a thread that ran out of its own still gets one.
+	enum { N3DS_EXCEPTION_STACK_SIZE = 16 * 1024, N3DS_EXCEPTION_STACK_AMOUNT = 4 };
+	static u8 gN3DSExceptionStacks[N3DS_EXCEPTION_STACK_AMOUNT][N3DS_EXCEPTION_STACK_SIZE] __attribute__((aligned(8)));
+	static const char* gN3DSExceptionThreadNames[N3DS_EXCEPTION_STACK_AMOUNT];
+	static volatile int gN3DSIsInException;
+
+	static void __attribute__((target("arm"))) exceptionHandlerN3DS(ERRF_ExceptionInfo* tInfo, CpuRegisters* tRegs) {
+		if (gN3DSIsInException++) {
+			// Another thread's at the same time: it waits.
+			for (;;) svcSleepThread(1000000000LL);
+		}
+		const char* kind = tInfo->type == ERRF_EXCEPTION_PREFETCH_ABORT ? "a jump to a bad address (prefetch abort)"
+			: tInfo->type == ERRF_EXCEPTION_DATA_ABORT ? "a bad memory access (data abort)"
+			: tInfo->type == ERRF_EXCEPTION_UNDEFINED ? "an undefined instruction"
+			: "a floating point exception";
+		const char* thread = "unknown";
+		const u8* sp = (const u8*)tRegs;
+		for (int i = 0; i < N3DS_EXCEPTION_STACK_AMOUNT; i++) {
+			if (sp >= gN3DSExceptionStacks[i] && sp < gN3DSExceptionStacks[i] + N3DS_EXCEPTION_STACK_SIZE && gN3DSExceptionThreadNames[i]) thread = gN3DSExceptionThreadNames[i];
+		}
+		static char text[512];
+		snprintf(text, sizeof(text), "CPU exception in the %s thread: %s at pc %08lX, lr %08lX, sp %08lX, address %08lX (fsr %08lX).",
+			thread, kind, (unsigned long)tRegs->pc, (unsigned long)tRegs->lr, (unsigned long)tRegs->sp, (unsigned long)tInfo->far, (unsigned long)tInfo->fsr);
+		logError(text);
+		snprintf(text, sizeof(text), "Registers: r0 %08lX r1 %08lX r2 %08lX r3 %08lX r4 %08lX r5 %08lX r6 %08lX r7 %08lX r8 %08lX r9 %08lX r10 %08lX r11 %08lX r12 %08lX cpsr %08lX.",
+			(unsigned long)tRegs->r[0], (unsigned long)tRegs->r[1], (unsigned long)tRegs->r[2], (unsigned long)tRegs->r[3], (unsigned long)tRegs->r[4], (unsigned long)tRegs->r[5], (unsigned long)tRegs->r[6],
+			(unsigned long)tRegs->r[7], (unsigned long)tRegs->r[8], (unsigned long)tRegs->r[9], (unsigned long)tRegs->r[10], (unsigned long)tRegs->r[11], (unsigned long)tRegs->r[12], (unsigned long)tRegs->cpsr);
+		logError(text);
+		// The words on the stack: return addresses among them (the calls
+		// that led there).
+		const u32* stack = (const u32*)tRegs->sp;
+		if (tRegs->sp >= 0x08000000 && tRegs->sp < 0x10000000 - 64 * 4) {
+			int length = snprintf(text, sizeof(text), "Stack:");
+			for (int i = 0; i < 48 && length < (int)sizeof(text) - 10; i++) length += snprintf(text + length, sizeof(text) - length, " %08lX", (unsigned long)stack[i]);
+			logError(text);
+		}
+		abortSystem();
+		for (;;) {}
+	}
+
+	void installN3DSExceptionHandler(int tSlot, const char* tThreadName) {
+		if (tSlot < 0 || tSlot >= N3DS_EXCEPTION_STACK_AMOUNT) return;
+		gN3DSExceptionThreadNames[tSlot] = tThreadName;
+		threadOnException(exceptionHandlerN3DS, gN3DSExceptionStacks[tSlot] + N3DS_EXCEPTION_STACK_SIZE, WRITE_DATA_TO_HANDLER_STACK);
+	}
+
 	void initSystem() {
 		if (gSystemN3DSData.mIsLoaded) return;
+		installN3DSExceptionHandler(0, "main");
 		signal(SIGABRT, abortSignalN3DS);
 		std::set_terminate(terminateN3DS);
 		std::set_new_handler(newHandlerN3DS);

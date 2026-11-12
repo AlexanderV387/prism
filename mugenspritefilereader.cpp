@@ -1393,7 +1393,10 @@ static void runN3DSStreamWorker(void*) {
 }
 
 #ifdef __3DS__
-static void runN3DSStreamWorkerThread(void* tCaller) { runN3DSStreamWorker(tCaller); }
+static void runN3DSStreamWorkerThread(void* tCaller) {
+	installN3DSExceptionHandler(1, "streamed sprites' reader");
+	runN3DSStreamWorker(tCaller);
+}
 #endif
 
 static void startN3DSStreamWorker() {
@@ -2468,6 +2471,14 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 	const int palette = tHasPalette ? sprite.mPaletteIndex + 1 : sprite.mPaletteIndex;
 
 	MugenSpriteFileSprite e;
+#ifdef __3DS__
+	// A high resolution stage's sprites one by one in the load's log, each
+	// written before it is read (the train's load ended in them).
+	if (gPrismMugenSpriteFileReaderData.mDownscale > 1) {
+		addN3DSPerfLine("    sprite %d,%d: %dx%d, format %d, %d bits, %u bytes, heap %d KB used", sprite.mGroupNo, sprite.mItemNo, sprite.mWidth, sprite.mHeight, sprite.mFormat, sprite.mColorDepth, (unsigned)sprite.mDataLength, getN3DSHeapUsedKB());
+		flushN3DSPerfNow();
+	}
+#endif
 #ifdef N3DS_HEAP_GUARD
 	// A PNG is decoded to 32 bits and copied once more in pieces (twice its
 	// pixels in 4 bytes), whatever its depth; the others, its 8-bit pixels.
@@ -2855,6 +2866,7 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 			(gN3DSPerf.mReadBytes - n3dsBefore.mReadBytes) / 1024.0, tex, gN3DSPerf.mTextures - n3dsBefore.mTextures, total - io - tex);
 		if (gN3DSSpritesLeftOut) addN3DSPerfLine("  %d sprites left out: no room in the heap", gN3DSSpritesLeftOut);
 		if (gN3DSStreamedSprites) addN3DSPerfLine("  %u sprites streamed: read from the file when drawn", gN3DSStreamedSprites);
+		if (gPrismMugenSpriteFileReaderData.mDownscale > 1) flushN3DSPerfNow();
 	}
 #endif
 

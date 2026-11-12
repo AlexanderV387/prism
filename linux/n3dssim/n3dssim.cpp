@@ -1,3 +1,4 @@
+#include <stdarg.h>
 // [3DS simulation] Runs Prism's 3DS texture code (3ds/texture_3ds.cpp) on a
 // PC, headless: textures in plain memory against a budget of linear memory
 // (N3DS_SIM_LINEAR, bytes; 70 MB by default), drawn sprites made current as
@@ -236,7 +237,17 @@ namespace prism {
 	int gN3DSFileBufferSize;
 	uint64_t getN3DSPerfTicks() { return 0; }
 	double getN3DSPerfMilliseconds(uint64_t tTicks) { return tTicks / 1000.0; }
-	void addN3DSPerfLine(const char*, ...) {}
+	// The console's load-time log, on stderr with N3DS_SIM_PERF set.
+	void addN3DSPerfLine(const char* tFormat, ...) {
+		static int isShown = -1;
+		if (isShown < 0) isShown = getenv("N3DS_SIM_PERF") ? 1 : 0;
+		if (!isShown) return;
+		va_list args;
+		va_start(args, tFormat);
+		vfprintf(stderr, tFormat, args);
+		va_end(args);
+		fputc('\n', stderr);
+	}
 
 	u32 gN3DSPalettes[4][256];
 	int gN3DSPaletteVersions[4];
