@@ -183,7 +183,8 @@ void removeMugenAnimationCameraEffectPositionReference(MugenAnimationHandlerElem
 
 void setMugenAnimationInvisible(MugenAnimationHandlerElement* tElement);
 void setMugenAnimationVisibility(MugenAnimationHandlerElement* tElement, int tIsVisible);
-// The screen it is drawn on (setDrawingScreen's: 0 the game's, 1 the 3DS's bottom one).
+// The screen it is drawn on (setDrawingScreen's: 0 the game's, 1 the 3DS's
+// bottom one; 2 both).
 void setMugenAnimationScreen(MugenAnimationHandlerElement* tElement, int tScreen);
 void setMugenAnimationDrawScale(MugenAnimationHandlerElement* tElement, const Vector2D& tScale);
 void setMugenAnimationDrawSize(MugenAnimationHandlerElement* tElement, const Vector2D& tSize);

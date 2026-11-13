@@ -174,6 +174,66 @@ namespace prism {
 	int getDrawingScreen() { return gN3DSDrawingData.mScreen; }
 	int isN3DSBottomScreenInUse() { return gN3DSDrawingData.mBottomFramesLeft > 0; }
 
+	// The bottom screen's average color, read from its framebuffer (the
+	// GPU's picture copied there) once the frame after the request is done.
+	static int gIsBottomAverageRequested;
+	static int gHasBottomAverage;
+	static Vector3D gBottomAverage;
+	static int gBottomAverageLeftOut[4];   // x0, y0, x1, y1 on the bottom screen
+
+	void requestDrawingScreenAverageColor(int tScreen, const GeoRectangle2D& tLeftOut) {
+		if (tScreen != 1) return;
+		const ScreenSize sz = getScreenSize();
+		gBottomAverageLeftOut[0] = int(tLeftOut.mTopLeft.x * BOTTOM_WIDTH / sz.x);
+		gBottomAverageLeftOut[1] = int(tLeftOut.mTopLeft.y * BOTTOM_HEIGHT / sz.y);
+		gBottomAverageLeftOut[2] = int(tLeftOut.mBottomRight.x * BOTTOM_WIDTH / sz.x);
+		gBottomAverageLeftOut[3] = int(tLeftOut.mBottomRight.y * BOTTOM_HEIGHT / sz.y);
+		gIsBottomAverageRequested = 1;
+		gHasBottomAverage = 0;
+	}
+
+	int getDrawingScreenAverageColor(int tScreen, Vector3D* oColor) {
+		if (tScreen != 1 || !gHasBottomAverage) return 0;
+		*oColor = gBottomAverage;
+		return 1;
+	}
+
+	static void readBottomAverageColor() {
+		u16 width = 0, height = 0;
+		u8* framebuffer = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, &width, &height);
+		if (!framebuffer || !width || !height) return;
+		const int is565 = gfxGetScreenFormat(GFX_BOTTOM) == GSP_RGB565_OES;
+		const u32 bytesPerPixel = is565 ? 2 : 3;
+		const u32 size = u32(width) * height * bytesPerPixel;
+		GSPGPU_InvalidateDataCache(framebuffer, size);
+		double r = 0, g = 0, b = 0;
+		u32 amount = 0;
+		// The screen turned on its side: a column of 240 pixels after another,
+		// from the bottom up.
+		for (int x = 0; x < BOTTOM_WIDTH; x += 3) {
+			for (int y = 0; y < BOTTOM_HEIGHT; y += 3) {
+				if (x >= gBottomAverageLeftOut[0] && x < gBottomAverageLeftOut[2] && y >= gBottomAverageLeftOut[1] && y < gBottomAverageLeftOut[3]) continue;
+				const u8* pixel = framebuffer + (u32(x) * height + (height - 1 - y)) * bytesPerPixel;
+				if (is565) {
+					const u16 c = u16(pixel[0] | (pixel[1] << 8));
+					r += ((c >> 11) & 31) * 255 / 31;
+					g += ((c >> 5) & 63) * 255 / 63;
+					b += (c & 31) * 255 / 31;
+				}
+				else {
+					b += pixel[0];
+					g += pixel[1];
+					r += pixel[2];
+				}
+				amount++;
+			}
+		}
+		if (!amount) return;
+		gBottomAverage = Vector3D(r / (255.0 * amount), g / (255.0 * amount), b / (255.0 * amount));
+		gHasBottomAverage = 1;
+		gIsBottomAverageRequested = 0;
+	}
+
 	void initDrawing() {
 		C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4);
 
@@ -194,9 +254,12 @@ namespace prism {
 			| GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
 
 		gN3DSDrawingData.mBottom = C3D_RenderTargetCreate(BOTTOM_HEIGHT, BOTTOM_WIDTH, GPU_RB_RGBA8, C3D_DEPTHTYPE(-1));
+		// In the bottom screen's own format: the text console made it RGB565
+		// (copied as RGB8 it showed stripes).
+		const int isBottom565 = gfxGetScreenFormat(GFX_BOTTOM) == GSP_RGB565_OES;
 		C3D_RenderTargetSetOutput(gN3DSDrawingData.mBottom, GFX_BOTTOM, GFX_LEFT,
 			GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0)
-			| GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8)
+			| GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(isBottom565 ? GX_TRANSFER_FMT_RGB565 : GX_TRANSFER_FMT_RGB8)
 			| GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
 		Mtx_OrthoTilt(&gN3DSDrawingData.mBottomProjection, 0.0f, BOTTOM_WIDTH, BOTTOM_HEIGHT, 0.0f, 0.0f, 1.0f, true);
 
@@ -326,6 +389,8 @@ namespace prism {
 		gFrameSprites = gFrameBatches = 0;
 		gN3DSDrawingData.mIsFrameStarted = 1;
 		advanceN3DSTextureFrame();
+		// The last frame's done (C3D_FrameBegin waited for it).
+		if (gIsBottomAverageRequested && gN3DSDrawingData.mBottomFramesLeft == 3) readBottomAverageColor();
 #ifdef N3DS_LINEAR_DIAG
 		// The linear memory's guards, twice a second (3ds/lineardiag_3ds.cpp).
 		static unsigned int diagnosedFrames = 0;

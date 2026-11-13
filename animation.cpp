@@ -278,7 +278,9 @@ namespace prism {
 			texturePos.bottomRight.y = cur->mTexturePosition.topLeft.y;
 		}
 
+		if (cur->mScreen) setDrawingScreen(cur->mScreen);
 		drawSprite(cur->mTextureData[frame], p, texturePos);
+		if (cur->mScreen) setDrawingScreen(0);
 
 		if (cur->mIsScaled || cur->mIsRotated || cur->mHasBaseColor || cur->mHasTransparency) {
 			setDrawingParametersToIdentity();
@@ -313,6 +315,7 @@ namespace prism {
 		e.mCenter = Vector3D(0, 0, 0);
 		e.mInversionState = Vector3DI(0, 0, 0);
 		e.mIsVisible = 1;
+		e.mScreen = 0;
 		int id = stl_int_map_push_back(gAnimationHandler.mList, e);
 		auto& element = gAnimationHandler.mList[id];
 		element.mID = id;
@@ -355,6 +358,10 @@ namespace prism {
 		e->mIsScaled = 1;
 		e->mScaleEffectCenter = tCenter;
 		e->mScale = tScale;
+	}
+
+	void setAnimationScreen(AnimationHandlerElement* e, int tScreen) {
+		e->mScreen = tScreen;
 	}
 
 	void setAnimationSize(AnimationHandlerElement* e, const Vector3D& tSize, const Position& tCenter) {

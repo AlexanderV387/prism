@@ -71,6 +71,11 @@ void enableDrawing();
 // 320x240. Elsewhere there is only the one.
 void setDrawingScreen(int tScreen);
 int getDrawingScreen();
+// The average color (0 to 1) of what a screen showed but in a rectangle
+// (the game's screen coordinates), asked for in one frame and there a frame
+// or two later (1 then, else 0). Only the 3DS's bottom screen (1) has it.
+void requestDrawingScreenAverageColor(int tScreen, const GeoRectangle2D& tLeftOut);
+int getDrawingScreenAverageColor(int tScreen, Vector3D* oColor);
 
 void scaleDrawing(float tFactor, const Position& tScalePosition);
 void scaleDrawing2D(const Vector2D& tFactor, const Position2D& tScalePosition);

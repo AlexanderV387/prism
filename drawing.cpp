@@ -10,6 +10,8 @@ namespace prism {
 	static int gDrawingScreen;
 	void setDrawingScreen(int tScreen) { gDrawingScreen = tScreen; }
 	int getDrawingScreen() { return gDrawingScreen; }
+	void requestDrawingScreenAverageColor(int, const GeoRectangle2D&) {}
+	int getDrawingScreenAverageColor(int, Vector3D*) { return 0; }
 #endif
 
 	void getRGBFromColor(Color tColor, float* tR, float* tG, float* tB) {

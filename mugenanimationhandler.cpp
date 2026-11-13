@@ -1490,7 +1490,9 @@ static void drawSingleMugenAnimation(void* tCaller, MugenAnimationHandlerElement
 		drawSingleMugenAnimationOnItsScreen(tCaller, tData);
 		return;
 	}
-	setDrawingScreen(tData.mScreen);
+	// 2: on both (a menu's background behind the bottom screen's part too).
+	if (tData.mScreen == 2) drawSingleMugenAnimationOnItsScreen(tCaller, tData);
+	setDrawingScreen(1);
 	drawSingleMugenAnimationOnItsScreen(tCaller, tData);
 	setDrawingScreen(0);
 }

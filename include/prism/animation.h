@@ -55,6 +55,7 @@ struct AnimationHandlerElement {
 
 	Vector3DI mInversionState;
 	int mIsVisible;
+	int mScreen;   // setDrawingScreen's
 };
 
 int handleDurationAndCheckIfOver(Duration* tNow, Duration tDuration);
@@ -86,6 +87,8 @@ void setAnimationScreenPositionReference(AnimationHandlerElement* tElement, Posi
 void setAnimationBasePositionReference(AnimationHandlerElement* tElement, Position* tBasePositionReference);
 void setAnimationScale(AnimationHandlerElement* tElement, const Vector3D& tScale, const Position& tCenter);
 void setAnimationSize(AnimationHandlerElement* tElement, const Vector3D& tSize, const Position& tCenter);
+// The screen it is drawn on (setDrawingScreen's: 0 the game's, 1 the 3DS's bottom one).
+void setAnimationScreen(AnimationHandlerElement* tElement, int tScreen);
 void setAnimationRotationZ(AnimationHandlerElement* tElement, float tAngle, const Position& tCenter);
 void setAnimationColor(AnimationHandlerElement* tElement, float r, float g, float b);
 void setAnimationColorType(AnimationHandlerElement* tElement, Color tColor);

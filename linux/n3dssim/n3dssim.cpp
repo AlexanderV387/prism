@@ -324,6 +324,7 @@ namespace prism {
 	// bottom's 320x240 under the top's, in the middle (as on the console).
 	static const int BOTTOM_W = 320, BOTTOM_H = 240;
 	static int gShotHeight = SHOT_H;
+	static int gIsCollectingForAverage;   // this frame's bottom sprites kept for its average color
 	static int gDrawingScreen;
 	void setDrawingScreen(int tScreen) { gDrawingScreen = tScreen; }
 	int getDrawingScreen() { return gDrawingScreen; }
@@ -380,7 +381,7 @@ namespace prism {
 	void drawSpriteNoRectangle(const TextureData& tTexture, const Position& tTopLeft, const Position& tTopRight, const Position& tBottomLeft, const Position& tBottomRight, const PrismRectangle& tTexturePosition) {
 		if (gIsDrawingDisabled) return;
 		drawSimulated(tTexture);
-		if (!isShotFrame(gSim.mFrames)) return;
+		if (!isShotFrame(gSim.mFrames) && !gIsCollectingForAverage) return;
 		SimSprite e;
 		e.mTexture = tTexture;
 		e.mTopLeft = tTopLeft.xy(); e.mTopRight = tTopRight.xy(); e.mBottomLeft = tBottomLeft.xy(); e.mBottomRight = tBottomRight.xy();
@@ -463,9 +464,60 @@ namespace prism {
 		}
 	}
 
+	static void renderShot(std::vector<float>& fb);
+
+	// The bottom screen's average color, from its picture (made for it).
+	static int gIsBottomAverageRequested, gHasBottomAverage;
+	static Vector3D gBottomAverage;
+	static GeoRectangle2D gBottomAverageLeftOut;
+	void requestDrawingScreenAverageColor(int tScreen, const GeoRectangle2D& tLeftOut) {
+		if (tScreen != 1) return;
+		gBottomAverageLeftOut = tLeftOut;
+		gIsBottomAverageRequested = 1;
+		gHasBottomAverage = 0;
+	}
+	int getDrawingScreenAverageColor(int tScreen, Vector3D* oColor) {
+		if (tScreen != 1 || !gHasBottomAverage) return 0;
+		*oColor = gBottomAverage;
+		return 1;
+	}
+	static void computeBottomAverage() {
+		std::vector<float> fb;
+		renderShot(fb);
+		double sum[3] = { 0, 0, 0 };
+		double n = 0;
+		const ScreenSize sz = getScreenSize();
+		const GeoRectangle2D& r = gBottomAverageLeftOut;
+		for (int y = 0; y < BOTTOM_H; y++) for (int x = 0; x < BOTTOM_W; x++) {
+			const double gx = x * double(sz.x) / BOTTOM_W, gy = y * double(sz.y) / BOTTOM_H;
+			if (gx >= r.mTopLeft.x && gx < r.mBottomRight.x && gy >= r.mTopLeft.y && gy < r.mBottomRight.y) continue;
+			const int px = x + (SHOT_W - BOTTOM_W) / 2, py = y + SHOT_H;
+			for (int i = 0; i < 3; i++) sum[i] += fb[(py * SHOT_W + px) * 3 + i];
+			n++;
+		}
+		if (n <= 0) n = 1;
+		gBottomAverage = Vector3D(sum[0] / n, sum[1] / n, sum[2] / n);
+		gHasBottomAverage = 1;
+		gIsBottomAverageRequested = 0;
+	}
+
 	static void writeShot() {
+		std::vector<float> fb;
+		renderShot(fb);
+		const char* dir = getenv("N3DS_SIM_SHOT_DIR");
+		char path[1024];
+		snprintf(path, sizeof(path), "%s/shot%05lu.ppm", dir ? dir : ".", gSim.mFrames);
+		FILE* f = fopen(path, "wb");
+		if (!f) return;
+		fprintf(f, "P6\n%d %d\n255\n", SHOT_W, gShotHeight);
+		for (size_t i = 0; i < fb.size(); i++) fputc((int)(fb[i] * 255 + 0.5f), f);
+		fclose(f);
+		fprintf(stderr, "n3dssim: picture %s (%zu sprites, %zu on the bottom screen)\n", path, gSimList.size(), gSimBottomList.size());
+	}
+
+	static void renderShot(std::vector<float>& fb) {
 		gShotHeight = gSimBottomList.empty() ? SHOT_H : SHOT_H + BOTTOM_H;
-		std::vector<float> fb(SHOT_W * gShotHeight * 3, 0.0f);
+		fb.assign(SHOT_W * gShotHeight * 3, 0.0f);
 		std::vector<const SimSprite*> all;
 		for (const auto& e : gSimList) all.push_back(&e);
 		for (const auto& e : gSimBottomList) all.push_back(&e);
@@ -491,21 +543,13 @@ namespace prism {
 			rasterTriangle(fb.data(), e, t, bx, by, bu, bv);
 			if (getenv("N3DS_SIM_SHOT_LIST")) fprintf(stderr, "n3dssim: sprite z %.1f tex %dx%d at (%.0f,%.0f)-(%.0f,%.0f) rect (%.0f,%.0f)-(%.0f,%.0f) blend %d a %.2f dst %.2f solid %d rgb %.2f,%.2f,%.2f off %.2f,%.2f,%.2f\n", e.mZ, e.mTexture.mTextureSize.x, e.mTexture.mTextureSize.y, (double)p[0].x, (double)p[0].y, (double)p[3].x, (double)p[3].y, (double)r.topLeft.x, (double)r.topLeft.y, (double)r.bottomRight.x, (double)r.bottomRight.y, (int)e.mData.mBlendType, e.mData.a, e.mData.mDestAlpha, e.mData.mIsColorSolid, e.mData.r, e.mData.g, e.mData.b, e.mData.rOffset, e.mData.gOffset, e.mData.bOffset);
 		}
-		const char* dir = getenv("N3DS_SIM_SHOT_DIR");
-		char path[1024];
-		snprintf(path, sizeof(path), "%s/shot%05lu.ppm", dir ? dir : ".", gSim.mFrames);
-		FILE* f = fopen(path, "wb");
-		if (!f) return;
-		fprintf(f, "P6\n%d %d\n255\n", SHOT_W, gShotHeight);
-		for (size_t i = 0; i < fb.size(); i++) fputc((int)(fb[i] * 255 + 0.5f), f);
-		fclose(f);
-		fprintf(stderr, "n3dssim: picture %s (%zu sprites, %zu on the bottom screen)\n", path, gSimList.size(), gSimBottomList.size());
 	}
 
 	void waitForScreen() {}
-	void startDrawing() { gSim.mFrames++; advanceN3DSTextureFrame(); gSimList.clear(); gSimBottomList.clear(); }
+	void startDrawing() { gSim.mFrames++; advanceN3DSTextureFrame(); gSimList.clear(); gSimBottomList.clear(); gIsCollectingForAverage = gIsBottomAverageRequested; }
 	void stopDrawing() {
 		if (isShotFrame(gSim.mFrames) && (!gSimList.empty() || !gSimBottomList.empty())) writeShot();
+		if (gIsCollectingForAverage && !gSimBottomList.empty()) computeBottomAverage();
 		gSimList.clear();
 		gSimBottomList.clear();
 		issueN3DSTextureReadAhead();
