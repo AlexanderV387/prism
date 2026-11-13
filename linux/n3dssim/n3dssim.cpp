@@ -314,10 +314,31 @@ namespace prism {
 		PrismRectangle mTexturePosition;
 		SimDrawData mData;
 		float mZ;
+		int mScreen;
 		bool operator<(const SimSprite& o) const { return mZ < o.mZ; }
 	};
 	static std::multiset<SimSprite> gSimList;
+	static std::multiset<SimSprite> gSimBottomList;   // the bottom screen's (setDrawingScreen(1))
 	static const int SHOT_W = 400, SHOT_H = 240;
+	// With sprites on the bottom screen the picture holds both screens, the
+	// bottom's 320x240 under the top's, in the middle (as on the console).
+	static const int BOTTOM_W = 320, BOTTOM_H = 240;
+	static int gShotHeight = SHOT_H;
+	static int gDrawingScreen;
+	void setDrawingScreen(int tScreen) { gDrawingScreen = tScreen; }
+	int getDrawingScreen() { return gDrawingScreen; }
+
+	// The top screen's transform undone, the bottom's (in the picture) done.
+	static Matrix4D getBottomFromTop() {
+		const ScreenSize sz = getScreenSize();
+		const float scale = fminf(400 / (float)sz.x, SHOT_H / (float)sz.y);
+		const Vector3D topOffset(floorf((SHOT_W - sz.x * scale) / 2), floorf((SHOT_H - sz.y * scale) / 2), 0);
+		Matrix4D m = createTranslationMatrix4D(Vector3D((SHOT_W - BOTTOM_W) / 2, SHOT_H, 0));
+		m = matMult4D(m, createScaleMatrix4D(Vector3D(BOTTOM_W / (double)sz.x, BOTTOM_H / (double)sz.y, 1)));
+		m = matMult4D(m, createScaleMatrix4D(Vector3D(1.0 / scale, 1.0 / scale, 1)));
+		m = matMult4D(m, createTranslationMatrix4D(vecScale(topOffset, -1)));
+		return m;
+	}
 
 	static int isShotFrame(unsigned long tFrame) {
 		static std::set<unsigned long>* frames = NULL;
@@ -366,6 +387,12 @@ namespace prism {
 		e.mTexturePosition = tTexturePosition;
 		e.mData = gDraw;
 		e.mZ = tTopLeft.z;
+		e.mScreen = gDrawingScreen;
+		if (gDrawingScreen == 1) {
+			e.mData.mMatrix = matMult4D(getBottomFromTop(), e.mData.mMatrix);
+			gSimBottomList.insert(e);
+			return;
+		}
 		gSimList.insert(e);
 	}
 
@@ -404,7 +431,11 @@ namespace prism {
 		if (fabsf(area) < 1e-6f) return;
 		int x0 = (int)floorf(fminf(px[0], fminf(px[1], px[2]))), x1 = (int)ceilf(fmaxf(px[0], fmaxf(px[1], px[2])));
 		int y0 = (int)floorf(fminf(py[0], fminf(py[1], py[2]))), y1 = (int)ceilf(fmaxf(py[0], fmaxf(py[1], py[2])));
-		if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 > SHOT_W) x1 = SHOT_W; if (y1 > SHOT_H) y1 = SHOT_H;
+		// Each screen's sprites only on it.
+		const int isBottom = e.mScreen == 1;
+		const int left = isBottom ? (SHOT_W - BOTTOM_W) / 2 : 0, right = isBottom ? (SHOT_W + BOTTOM_W) / 2 : SHOT_W;
+		const int top = isBottom ? SHOT_H : 0, bottom = isBottom ? gShotHeight : SHOT_H;
+		if (x0 < left) x0 = left; if (y0 < top) y0 = top; if (x1 > right) x1 = right; if (y1 > bottom) y1 = bottom;
 		const SimDrawData& d = e.mData;
 		for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
 			const float cx = x + 0.5f, cy = y + 0.5f;
@@ -433,8 +464,13 @@ namespace prism {
 	}
 
 	static void writeShot() {
-		std::vector<float> fb(SHOT_W * SHOT_H * 3, 0.0f);
-		for (const auto& e : gSimList) {
+		gShotHeight = gSimBottomList.empty() ? SHOT_H : SHOT_H + BOTTOM_H;
+		std::vector<float> fb(SHOT_W * gShotHeight * 3, 0.0f);
+		std::vector<const SimSprite*> all;
+		for (const auto& e : gSimList) all.push_back(&e);
+		for (const auto& e : gSimBottomList) all.push_back(&e);
+		for (const auto* sprite : all) {
+			const SimSprite& e = *sprite;
 			Texture texture = (Texture)e.mTexture.mTexture->mData;
 			prepareN3DSTexture(e.mTexture);
 			if (!texture->mIsInitialized || !texture->mTex.data) continue;
@@ -460,17 +496,18 @@ namespace prism {
 		snprintf(path, sizeof(path), "%s/shot%05lu.ppm", dir ? dir : ".", gSim.mFrames);
 		FILE* f = fopen(path, "wb");
 		if (!f) return;
-		fprintf(f, "P6\n%d %d\n255\n", SHOT_W, SHOT_H);
+		fprintf(f, "P6\n%d %d\n255\n", SHOT_W, gShotHeight);
 		for (size_t i = 0; i < fb.size(); i++) fputc((int)(fb[i] * 255 + 0.5f), f);
 		fclose(f);
-		fprintf(stderr, "n3dssim: picture %s (%zu sprites)\n", path, gSimList.size());
+		fprintf(stderr, "n3dssim: picture %s (%zu sprites, %zu on the bottom screen)\n", path, gSimList.size(), gSimBottomList.size());
 	}
 
 	void waitForScreen() {}
-	void startDrawing() { gSim.mFrames++; advanceN3DSTextureFrame(); gSimList.clear(); }
+	void startDrawing() { gSim.mFrames++; advanceN3DSTextureFrame(); gSimList.clear(); gSimBottomList.clear(); }
 	void stopDrawing() {
-		if (isShotFrame(gSim.mFrames) && !gSimList.empty()) writeShot();
+		if (isShotFrame(gSim.mFrames) && (!gSimList.empty() || !gSimBottomList.empty())) writeShot();
 		gSimList.clear();
+		gSimBottomList.clear();
 		issueN3DSTextureReadAhead();
 	}
 	void waitForRendering() {}

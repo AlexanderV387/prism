@@ -502,7 +502,13 @@ namespace prism {
 	// second: frames a second, and where a frame's time went.
 	static FrameParts gCounterParts;
 
+	int isN3DSBottomScreenInUse();   // drawing_3ds.cpp
+
 	static void updateFrameCounter() {
+		if (isN3DSBottomScreenInUse()) {
+			memset(&gCounterParts, 0, sizeof(gCounterParts));
+			return;
+		}
 		const double n = gCounterParts.mFrames;
 		const double frame = getN3DSPerfMilliseconds(gCounterParts.mFrameTicks) / n;
 		const double wait = getN3DSPerfMilliseconds(gCounterParts.mWaitTicks) / n;

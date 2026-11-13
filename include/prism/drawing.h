@@ -66,6 +66,12 @@ void updateDrawingFrameStartTime(float tTimeDelta);
 void disableDrawing();
 void enableDrawing();
 
+// The screen the sprites drawn from now on go to: 0, the game's (the 3DS's
+// top screen); 1, the 3DS's bottom screen, the game's screen over its whole
+// 320x240. Elsewhere there is only the one.
+void setDrawingScreen(int tScreen);
+int getDrawingScreen();
+
 void scaleDrawing(float tFactor, const Position& tScalePosition);
 void scaleDrawing2D(const Vector2D& tFactor, const Position2D& tScalePosition);
 void scaleDrawing3D(const Vector3D& tFactor, const Position& tScalePosition);

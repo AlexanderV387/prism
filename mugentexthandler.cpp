@@ -407,6 +407,7 @@ typedef struct {
 	Duration mBuildupNow;
 
 	int mIsVisible;
+	int mScreen;   // setDrawingScreen's
 } MugenText;
 
 static struct {
@@ -769,6 +770,7 @@ static void drawSingleText(void* tCaller, MugenText& tData) {
 
 	MugenText* e = &tData;
 	if (!e->mIsVisible) return;
+	setDrawingScreen(e->mScreen);
 
 	if (e->mFont->mType == MUGEN_FONT_TYPE_BITMAP) {
 		drawSingleBitmapText(e);
@@ -784,6 +786,7 @@ static void drawSingleText(void* tCaller, MugenText& tData) {
 		logErrorInteger(e->mFont->mType);
 		recoverFromError();
 	}
+	setDrawingScreen(0);
 }
 
 static void drawMugenTextHandler(void* tData) {
@@ -811,6 +814,7 @@ void drawMugenText(char* tText, const Position& tPosition, int tFont) {
 	textData.mBuildupNow = 0;
 
 	textData.mIsVisible = 1;
+	textData.mScreen = 0;
 	drawSingleText(NULL, textData);
 }
 
@@ -834,6 +838,7 @@ int addMugenText(const char* tText, const Position& tPosition, int tFont)
 	e.mBuildupNow = 0;
 
 	e.mIsVisible = 1;
+	e.mScreen = 0;
 
 	return id;
 }
@@ -1050,6 +1055,12 @@ void setMugenTextVisibility(int tID, int tIsVisible)
 {
 	MugenText* e = &gMugenTextHandler.mHandledTexts[tID];
 	e->mIsVisible = tIsVisible;
+}
+
+void setMugenTextScreen(int tID, int tScreen)
+{
+	MugenText* e = &gMugenTextHandler.mHandledTexts[tID];
+	e->mScreen = tScreen;
 }
 
 float getMugenTextSizeX(int tID)

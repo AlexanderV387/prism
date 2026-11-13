@@ -338,6 +338,7 @@ MugenAnimationHandlerElement* addMugenAnimation(MugenAnimation* tStartAnimation,
 	e.mPendingSprite = NULL;
 	e.mPendingSpriteFrames = 0;
 	e.mIsStretchedToScreenWidth = 0;
+	e.mScreen = 0;
 
 	e.mHasPassiveHitCB = 0;
 	e.mHasAttackHitCB = 0;
@@ -535,6 +536,10 @@ void setMugenAnimationInvisible(MugenAnimationHandlerElement* e)
 
 void setMugenAnimationVisibility(MugenAnimationHandlerElement* e, int tIsVisible) {
 	e->mIsInvisible = !tIsVisible;
+}
+
+void setMugenAnimationScreen(MugenAnimationHandlerElement* e, int tScreen) {
+	e->mScreen = tScreen;
 }
 
 void setMugenAnimationDrawScale(MugenAnimationHandlerElement* e, const Vector2D& tScale)
@@ -1478,7 +1483,19 @@ static void findMugenAnimationScreenStretch(MugenAnimationHandlerElement* e, Dra
 #endif
 }
 
+static void drawSingleMugenAnimationOnItsScreen(void* tCaller, MugenAnimationHandlerElement& tData);
+
 static void drawSingleMugenAnimation(void* tCaller, MugenAnimationHandlerElement& tData) {
+	if (!tData.mScreen) {
+		drawSingleMugenAnimationOnItsScreen(tCaller, tData);
+		return;
+	}
+	setDrawingScreen(tData.mScreen);
+	drawSingleMugenAnimationOnItsScreen(tCaller, tData);
+	setDrawingScreen(0);
+}
+
+static void drawSingleMugenAnimationOnItsScreen(void* tCaller, MugenAnimationHandlerElement& tData) {
 	(void)tCaller;
 	setProfilingSectionMarkerCurrentFunction();
 	MugenAnimationHandlerElement* e = &tData;

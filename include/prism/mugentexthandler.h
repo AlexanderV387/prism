@@ -89,6 +89,8 @@ void setMugenTextBuiltUp(int tID);
 int isMugenTextBuiltUp(int tID);
 int getMugenTextVisibility(int tID);
 void setMugenTextVisibility(int tID, int tIsVisible);
+// The screen it is drawn on (setDrawingScreen's: 0 the game's, 1 the 3DS's bottom one).
+void setMugenTextScreen(int tID, int tScreen);
 float getMugenTextSizeX(int tID);
 void setMugenTextScale(int tID, float tScale); // only for bitmap fonts for now
 

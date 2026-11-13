@@ -38,6 +38,7 @@ struct MugenAnimationHandlerElement {
 	MugenSpriteFileSprite* mPendingSprite;     // [3DS] the one being read, still the one asked for
 	int mPendingSpriteFrames;
 	int mIsStretchedToScreenWidth;             // [3DS] when it covers the game's screen (MUGEN_ANIMATION_STRETCH_*)
+	int mScreen;                               // where it is drawn (setDrawingScreen: 1, the 3DS's bottom screen)
 
 	int mHasPassiveHitCB;
 	void* mPassiveHitCaller;
@@ -182,6 +183,8 @@ void removeMugenAnimationCameraEffectPositionReference(MugenAnimationHandlerElem
 
 void setMugenAnimationInvisible(MugenAnimationHandlerElement* tElement);
 void setMugenAnimationVisibility(MugenAnimationHandlerElement* tElement, int tIsVisible);
+// The screen it is drawn on (setDrawingScreen's: 0 the game's, 1 the 3DS's bottom one).
+void setMugenAnimationScreen(MugenAnimationHandlerElement* tElement, int tScreen);
 void setMugenAnimationDrawScale(MugenAnimationHandlerElement* tElement, const Vector2D& tScale);
 void setMugenAnimationDrawSize(MugenAnimationHandlerElement* tElement, const Vector2D& tSize);
 void setMugenAnimationDrawAngle(MugenAnimationHandlerElement* tElement, float tAngle);

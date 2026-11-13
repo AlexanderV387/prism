@@ -91,8 +91,18 @@ namespace prism {
 	static const int TOP_HEIGHT = 240;
 	static const int MAXIMUM_VERTEX_AMOUNT = 6 * 8192;
 
+	// The bottom screen's 320x240, drawn by the GPU when the game puts
+	// sprites there (the menus), else left to the text console.
+	static const int BOTTOM_WIDTH = 320;
+	static const int BOTTOM_HEIGHT = 240;
+
 	static struct {
 		C3D_RenderTarget* mTop;
+		C3D_RenderTarget* mBottom;
+		C3D_Mtx mBottomProjection;
+		Matrix4D mBottomFromTop;   // the top screen's transform undone, the bottom's done
+		int mScreen;               // where sprites go now (setDrawingScreen)
+		int mBottomFramesLeft;     // frames the bottom screen is still the GPU's
 		DVLB_s* mShaderDVLB;
 		shaderProgram_s mShader;
 		int mProjectionLocation;
@@ -118,6 +128,7 @@ namespace prism {
 
 	// Sorted by z; sprites of the same z in the order drawn.
 	static std::multiset<DrawListSpriteElement> gDrawList;
+	static std::multiset<DrawListSpriteElement> gBottomDrawList;
 	static DrawingData gDrawingData;
 
 	// ==========================================================================
@@ -152,7 +163,16 @@ namespace prism {
 		if (gIsStretched) scaleX = TOP_WIDTH / (float)sz.x;
 		gN3DSDrawingData.mScreenScale = Vector3D(scaleX, scale, 1);
 		gN3DSDrawingData.mScreenOffset = Vector3D(floorf((TOP_WIDTH - sz.x * scaleX) / 2), floorf((TOP_HEIGHT - sz.y * scale) / 2), 0);
+		// The bottom screen: the game's screen over all of it.
+		Matrix4D m = createScaleMatrix4D(Vector3D(BOTTOM_WIDTH / (double)sz.x, BOTTOM_HEIGHT / (double)sz.y, 1));
+		m = matMult4D(m, createScaleMatrix4D(Vector3D(1.0 / scaleX, 1.0 / scale, 1)));
+		m = matMult4D(m, createTranslationMatrix4D(vecScale(gN3DSDrawingData.mScreenOffset, -1)));
+		gN3DSDrawingData.mBottomFromTop = m;
 	}
+
+	void setDrawingScreen(int tScreen) { gN3DSDrawingData.mScreen = tScreen; }
+	int getDrawingScreen() { return gN3DSDrawingData.mScreen; }
+	int isN3DSBottomScreenInUse() { return gN3DSDrawingData.mBottomFramesLeft > 0; }
 
 	void initDrawing() {
 		C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4);
@@ -172,6 +192,13 @@ namespace prism {
 			GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0)
 			| GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8)
 			| GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
+
+		gN3DSDrawingData.mBottom = C3D_RenderTargetCreate(BOTTOM_HEIGHT, BOTTOM_WIDTH, GPU_RB_RGBA8, C3D_DEPTHTYPE(-1));
+		C3D_RenderTargetSetOutput(gN3DSDrawingData.mBottom, GFX_BOTTOM, GFX_LEFT,
+			GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0)
+			| GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8)
+			| GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
+		Mtx_OrthoTilt(&gN3DSDrawingData.mBottomProjection, 0.0f, BOTTOM_WIDTH, BOTTOM_HEIGHT, 0.0f, 0.0f, 1.0f, true);
 
 		gN3DSDrawingData.mShaderDVLB = DVLB_ParseFile((u32*)prism3ds_shbin, prism3ds_shbin_size);
 		shaderProgramInit(&gN3DSDrawingData.mShader);
@@ -212,6 +239,8 @@ namespace prism {
 		if (!gN3DSDrawingData.mTop) return;
 		if (gN3DSDrawingData.mIsFrameStarted) C3D_FrameEnd(0);
 		C3D_RenderTargetDelete(gN3DSDrawingData.mTop);
+		if (gN3DSDrawingData.mBottom) C3D_RenderTargetDelete(gN3DSDrawingData.mBottom);
+		gN3DSDrawingData.mBottom = NULL;
 		C3D_TexDelete(&gN3DSDrawingData.mWhite);
 		gN3DSDrawingData.mTop = NULL;
 		shaderProgramFree(&gN3DSDrawingData.mShader);
@@ -246,7 +275,7 @@ namespace prism {
 
 	void drawSprite(const TextureData& tTexture, const Position& tPos, const PrismRectangle& tTexturePosition) {
 		if (gDrawingData.mIsDisabled) return;
-		if (isCulledOutsideScreen(tPos, tTexturePosition)) return;
+		if (!gN3DSDrawingData.mScreen && isCulledOutsideScreen(tPos, tTexturePosition)) return;
 
 		const auto sizeX = abs(tTexturePosition.bottomRight.x - tTexturePosition.topLeft.x) + 1;
 		const auto sizeY = abs(tTexturePosition.bottomRight.y - tTexturePosition.topLeft.y) + 1;
@@ -270,6 +299,11 @@ namespace prism {
 		e.mTexturePosition = tTexturePosition;
 		e.mData = gDrawingData;
 		e.mZ = tTopLeft.z;
+		if (gN3DSDrawingData.mScreen == 1) {
+			e.mData.mTransformationMatrix = matMult4D(gN3DSDrawingData.mBottomFromTop, e.mData.mTransformationMatrix);
+			gBottomDrawList.insert(e);
+			return;
+		}
 		gDrawList.insert(e);
 	}
 
@@ -314,6 +348,7 @@ namespace prism {
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, gN3DSDrawingData.mProjectionLocation, &gN3DSDrawingData.mProjection);
 		gN3DSDrawingData.mVertexAmount = 0;
 		gDrawList.clear();
+		gBottomDrawList.clear();
 	}
 
 	// The state a sprite is drawn with: sprites in a row with the same one
@@ -522,6 +557,28 @@ namespace prism {
 		flushBatch();
 	}
 
+	// The bottom screen's sprites, if any; a few black frames once they are
+	// gone (the text console's again then).
+	static void drawBottomScreen() {
+		if (!gN3DSDrawingData.mBottom) return;
+		if (gBottomDrawList.empty()) {
+			if (gN3DSDrawingData.mBottomFramesLeft <= 0) return;
+			gN3DSDrawingData.mBottomFramesLeft--;
+		}
+		else gN3DSDrawingData.mBottomFramesLeft = 3;
+		C3D_RenderTargetClear(gN3DSDrawingData.mBottom, C3D_CLEAR_ALL, 0x000000FF, 0);
+		C3D_FrameDrawOn(gN3DSDrawingData.mBottom);
+		C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, gN3DSDrawingData.mProjectionLocation, &gN3DSDrawingData.mBottomProjection);
+		DrawState state;
+		int hasState = 0;
+		for (const auto& e : gBottomDrawList) {
+			drawSortedSprite(e, &state, &hasState);
+		}
+		flushBatch();
+		gBottomDrawList.clear();
+	}
+
 	void stopDrawing() {
 		if (!gN3DSDrawingData.mIsFrameStarted) return;
 
@@ -534,6 +591,7 @@ namespace prism {
 		}
 		flushBatch();
 		gDrawList.clear();
+		drawBottomScreen();
 		issueN3DSTextureReadAhead();
 
 		GSPGPU_FlushDataCache(gN3DSDrawingData.mVertices, gN3DSDrawingData.mVertexAmount * sizeof(Vertex));

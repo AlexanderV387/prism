@@ -5,6 +5,13 @@
 
 namespace prism {
 
+#if !defined(__3DS__) && !defined(N3DS_TEXTURE_SIM)
+	// Only the one screen here: what would go to a second one is drawn as usual.
+	static int gDrawingScreen;
+	void setDrawingScreen(int tScreen) { gDrawingScreen = tScreen; }
+	int getDrawingScreen() { return gDrawingScreen; }
+#endif
+
 	void getRGBFromColor(Color tColor, float* tR, float* tG, float* tB) {
 
 		switch (tColor) {
