@@ -273,7 +273,7 @@ namespace prism {
 		if (!base) {
 			gFailures++;
 			const uint32_t failures = gFailures;
-			if (freeAfter != freeBefore && !gIsStopping) {
+			if (freeAfter != freeBefore && freeBefore && !gIsStopping) {
 				gIsStopping = 1;
 				logErrorFormat("Linear memory: a failed allocation (#%lu, %u bytes, by 0x%08lX) changed the free count.", (unsigned long)gNumber, (unsigned)tSize, (unsigned long)tCaller);
 				stop();
@@ -286,8 +286,11 @@ namespace prism {
 			unlock();
 			return base + GUARD;
 		}
-		// libctru's count: down by the block's size, exactly.
-		if (realSize < tSize + 2 * GUARD || freeBefore - freeAfter != realSize) {
+		// libctru's count: down by the block's size, exactly (but for the
+		// first allocation: libctru's list of free pieces made by it).
+		const int isFirst = !freeBefore && gBlocks.empty();
+		const size_t expectedBefore = isFirst ? size_t(__ctru_linear_heap_size) : freeBefore;
+		if (realSize < tSize + 2 * GUARD || expectedBefore - freeAfter != realSize) {
 			gIsStopping = 1;
 			logErrorFormat("Linear memory's count went wrong in allocation #%lu: %p, %u bytes (%u kept), by 0x%08lX; free %u -> %u.",
 				(unsigned long)gNumber, base + GUARD, (unsigned)tSize, (unsigned)realSize, (unsigned long)tCaller, (unsigned)freeBefore, (unsigned)freeAfter);
