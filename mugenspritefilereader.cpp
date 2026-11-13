@@ -969,6 +969,13 @@ static struct {
 	int mIsBroken = 0;
 	std::map<uint32_t, N3DSDownscaleCacheEntry> mEntries;
 	uint32_t mHits = 0, mMisses = 0;
+	// While writing one: the same file's cache at a smaller factor, if there,
+	// its pixels made smaller still instead of decoding the PNGs again (Chun
+	// Li HD's 659 at a fifth took 127 s on a New 3DS, at a quarter cached).
+	FILE* mSourceFile = NULL;
+	uint32_t mSourceDownscale = 0;
+	std::map<uint32_t, N3DSDownscaleCacheEntry> mSourceEntries;
+	uint32_t mDerived = 0;
 } gN3DSDownscaleCache;
 
 static std::string getN3DSDownscaleCacheDirectory() {
@@ -980,45 +987,66 @@ static std::string getN3DSDownscaleCacheDirectory() {
 #endif
 }
 
+static std::string getN3DSDownscaleCachePath(const std::string& tDirectory, const char* tPath, uint32_t tSourceSize, int tDownscale) {
+	uint32_t hash = 2166136261u;
+	for (const char* p = tPath; *p; p++) hash = (hash ^ (uint8_t)*p) * 16777619u;
+	char name[64];
+	snprintf(name, sizeof(name), "/%08lx-%lu-%d.dls", (unsigned long)hash, (unsigned long)tSourceSize, tDownscale);
+	return tDirectory + name;
+}
+
+// A finished cache file for that factor, its index read; NULL if none.
+static FILE* openN3DSDownscaleCacheFile(const std::string& tFilePath, uint32_t tSourceSize, int tDownscale, char* tReadBuffer, size_t tReadBufferSize, std::map<uint32_t, N3DSDownscaleCacheEntry>* oEntries) {
+	FILE* file = fopen(tFilePath.c_str(), "rb");
+	if (!file) return NULL;
+	setvbuf(file, tReadBuffer, _IOFBF, tReadBufferSize);
+	N3DSDownscaleCacheHeader header;
+	int isValid = fread(&header, sizeof(header), 1, file) == 1 && header.mMagic == N3DS_DOWNSCALE_CACHE_MAGIC
+		&& header.mSourceSize == tSourceSize && header.mDownscale == (uint32_t)tDownscale && header.mEntryAmount < 100000;
+	if (isValid) {
+		std::vector<N3DSDownscaleCacheEntry> entries(header.mEntryAmount);
+		isValid = !fseek(file, header.mIndexOffset, SEEK_SET)
+			&& (entries.empty() || fread(entries.data(), sizeof(N3DSDownscaleCacheEntry), entries.size(), file) == entries.size());
+		if (isValid) for (const auto& entry : entries) (*oEntries)[entry.mOrdinal] = entry;
+	}
+	if (!isValid) {
+		fclose(file);
+		oEntries->clear();
+		return NULL;
+	}
+	return file;
+}
+
 static void beginN3DSDownscaleCache(const char* tPath, uint32_t tSourceSize, int tDownscale) {
 	auto& c = gN3DSDownscaleCache;
 	c.mMode = N3DS_DOWNSCALE_CACHE_OFF;
 	c.mEntries.clear();
 	c.mHits = c.mMisses = 0;
+	c.mDerived = 0;
 	c.mIsBroken = 0;
 	c.mOrdinal = 0;
 	const std::string directory = getN3DSDownscaleCacheDirectory();
 	if (tDownscale <= 1 || directory.empty()) return;
 
-	uint32_t hash = 2166136261u;
-	for (const char* p = tPath; *p; p++) hash = (hash ^ (uint8_t)*p) * 16777619u;
-	char name[64];
-	snprintf(name, sizeof(name), "/%08lx-%lu-%d.dls", (unsigned long)hash, (unsigned long)tSourceSize, tDownscale);
-	c.mPath = directory + name;
+	c.mPath = getN3DSDownscaleCachePath(directory, tPath, tSourceSize, tDownscale);
 	c.mSourceSize = tSourceSize;
 	c.mDownscale = uint32_t(tDownscale);
 
-	if (FILE* file = fopen(c.mPath.c_str(), "rb")) {
-		// Read through a 64 KB buffer: the default one (a kilobyte) made
-		// thousands of reads of the card (Estres Extremo's 4.4 MB took as
-		// long from the cache as decoding its PNGs).
-		static char readBuffer[64 * 1024];
-		setvbuf(file, readBuffer, _IOFBF, sizeof(readBuffer));
-		N3DSDownscaleCacheHeader header;
-		int isValid = fread(&header, sizeof(header), 1, file) == 1 && header.mMagic == N3DS_DOWNSCALE_CACHE_MAGIC
-			&& header.mSourceSize == tSourceSize && header.mDownscale == (uint32_t)tDownscale && header.mEntryAmount < 100000;
-		if (isValid) {
-			std::vector<N3DSDownscaleCacheEntry> entries(header.mEntryAmount);
-			isValid = !fseek(file, header.mIndexOffset, SEEK_SET)
-				&& (entries.empty() || fread(entries.data(), sizeof(N3DSDownscaleCacheEntry), entries.size(), file) == entries.size());
-			if (isValid) for (const auto& entry : entries) c.mEntries[entry.mOrdinal] = entry;
-		}
-		if (isValid) {
-			c.mFile = file;
-			c.mMode = N3DS_DOWNSCALE_CACHE_READING;
-			return;
-		}
-		fclose(file);
+	// Read through a 64 KB buffer: the default one (a kilobyte) made
+	// thousands of reads of the card (Estres Extremo's 4.4 MB took as long
+	// from the cache as decoding its PNGs).
+	static char readBuffer[64 * 1024];
+	if (FILE* file = openN3DSDownscaleCacheFile(c.mPath, tSourceSize, tDownscale, readBuffer, sizeof(readBuffer), &c.mEntries)) {
+		c.mFile = file;
+		c.mMode = N3DS_DOWNSCALE_CACHE_READING;
+		return;
+	}
+
+	// The nearest smaller factor cached, to make this one's from.
+	static char sourceReadBuffer[64 * 1024];
+	for (int factor = tDownscale - 1; factor >= 2 && !c.mSourceFile; factor--) {
+		c.mSourceFile = openN3DSDownscaleCacheFile(getN3DSDownscaleCachePath(directory, tPath, tSourceSize, factor), tSourceSize, factor, sourceReadBuffer, sizeof(sourceReadBuffer), &c.mSourceEntries);
+		if (c.mSourceFile) c.mSourceDownscale = uint32_t(factor);
 	}
 
 	mkdir(directory.c_str(), 0777);
@@ -1077,6 +1105,99 @@ static int readN3DSDownscaleCacheSprite(Buffer* oBuffer, uint32_t tDataLength, i
 	return 1;
 }
 
+// Whether the cache at the smaller factor has this sprite (of tWidth x
+// tHeight whole).
+static int hasN3DSDownscaleSourceSprite(uint32_t tDataLength, int tWidth, int tHeight) {
+	auto& c = gN3DSDownscaleCache;
+	if (c.mMode != N3DS_DOWNSCALE_CACHE_WRITING || !c.mSourceFile) return 0;
+	const auto it = c.mSourceEntries.find(c.mOrdinal);
+	const uint32_t b = c.mSourceDownscale;
+	return it != c.mSourceEntries.end() && it->second.mDataLength == tDataLength
+		&& it->second.mWidth == (tWidth + b - 1) / b && it->second.mHeight == (tHeight + b - 1) / b;
+}
+
+// The columns (or rows) of the smaller factor's image each pixel of this
+// one covers, with how many of the whole image's pixels of each.
+typedef struct { int mFirst, mAmount; uint8_t mWeights[16]; } N3DSDownscaleSpan;
+
+static std::vector<N3DSDownscaleSpan> getN3DSDownscaleSpans(int tWhole, int tSourceFactor, int tFactor) {
+	const int amount = (tWhole + tFactor - 1) / tFactor;
+	std::vector<N3DSDownscaleSpan> ret(amount);
+	for (int i = 0; i < amount; i++) {
+		const int start = i * tFactor, end = std::min(tWhole, start + tFactor);
+		N3DSDownscaleSpan& span = ret[i];
+		span.mFirst = start / tSourceFactor;
+		span.mAmount = 0;
+		for (int j = span.mFirst; j * tSourceFactor < end && span.mAmount < 16; j++) {
+			const int overlap = std::min(end, (j + 1) * tSourceFactor) - std::max(start, j * tSourceFactor);
+			span.mWeights[span.mAmount++] = uint8_t(overlap);
+		}
+	}
+	return ret;
+}
+
+// This sprite's pixels made from the smaller factor's (each pixel's area of
+// the whole image, weighted by alpha, as parseRGBAPNGDownscaled averages).
+static int readN3DSDownscaleSourceSprite(Buffer* oBuffer, uint32_t tDataLength, int tWholeWidth, int tWholeHeight) {
+	auto& c = gN3DSDownscaleCache;
+	if (!hasN3DSDownscaleSourceSprite(tDataLength, tWholeWidth, tWholeHeight)) return 0;
+	const auto& entry = c.mSourceEntries[c.mOrdinal];
+	const int sw = int(entry.mWidth), sh = int(entry.mHeight);
+	const size_t sourceLength = size_t(sw) * sh * 4;
+	uint8_t* source = (uint8_t*)allocMemory(int(sourceLength));
+#ifdef __3DS__
+	const uint64_t readStart = getN3DSPerfTicks();
+#endif
+	const int isRead = !fseek(c.mSourceFile, entry.mOffset, SEEK_SET) && fread(source, 1, sourceLength, c.mSourceFile) == sourceLength;
+#ifdef __3DS__
+	gN3DSPerf.mReadTicks += getN3DSPerfTicks() - readStart;
+	gN3DSPerf.mReads++;
+	gN3DSPerf.mReadBytes += sourceLength;
+#endif
+	if (!isRead) {
+		freeMemory(source);
+		return 0;
+	}
+	const int f = int(c.mDownscale), b = int(c.mSourceDownscale);
+	const auto columns = getN3DSDownscaleSpans(tWholeWidth, b, f);
+	const auto rows = getN3DSDownscaleSpans(tWholeHeight, b, f);
+	const int w = int(columns.size()), h = int(rows.size());
+	uint8_t* dst = (uint8_t*)allocMemory(w * h * 4);
+	for (int y = 0; y < h; y++) {
+		const N3DSDownscaleSpan& row = rows[y];
+		for (int x = 0; x < w; x++) {
+			const N3DSDownscaleSpan& column = columns[x];
+			uint32_t sb = 0, sg = 0, sr = 0, sa = 0, area = 0;
+			for (int j = 0; j < row.mAmount; j++) {
+				const int sy = row.mFirst + j;
+				if (sy >= sh) break;
+				const uint8_t* line = source + size_t(sy) * sw * 4;
+				for (int i = 0; i < column.mAmount; i++) {
+					const int sx = column.mFirst + i;
+					if (sx >= sw) break;
+					const uint32_t weight = uint32_t(row.mWeights[j]) * column.mWeights[i];
+					const uint8_t* p = line + sx * 4;
+					const uint32_t a = p[3] * weight;
+					sb += p[0] * a; sg += p[1] * a; sr += p[2] * a; sa += a; area += weight;
+				}
+			}
+			uint8_t* pixel = dst + (size_t(y) * w + x) * 4;
+			if (!sa) {
+				pixel[0] = pixel[1] = pixel[2] = pixel[3] = 0;
+				continue;
+			}
+			pixel[0] = uint8_t(sb / sa);
+			pixel[1] = uint8_t(sg / sa);
+			pixel[2] = uint8_t(sr / sa);
+			pixel[3] = uint8_t(sa / area);
+		}
+	}
+	freeMemory(source);
+	c.mDerived++;
+	*oBuffer = makeBufferOwned(dst, w * h * 4);
+	return 1;
+}
+
 static void writeN3DSDownscaleCacheSprite(const Buffer& tBuffer, uint32_t tDataLength, int tWidth, int tHeight) {
 	auto& c = gN3DSDownscaleCache;
 	if (c.mMode != N3DS_DOWNSCALE_CACHE_WRITING || c.mIsBroken) return;
@@ -1109,6 +1230,10 @@ static void endN3DSDownscaleCache() {
 		// Some of its sprites not there or not read: made again next time.
 		if (c.mMisses) remove(c.mPath.c_str());
 	}
+	if (c.mSourceFile) fclose(c.mSourceFile);
+	c.mSourceFile = NULL;
+	c.mSourceDownscale = 0;
+	c.mSourceEntries.clear();
 	c.mFile = NULL;
 	c.mMode = N3DS_DOWNSCALE_CACHE_OFF;
 	c.mEntries.clear();
@@ -1135,9 +1260,11 @@ static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawPNGBuffer(Buffer& t
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 		Buffer argb32Buffer;
 		if (downscale <= 1 || !readN3DSDownscaleCacheSprite(&argb32Buffer, tRawPNGBuffer.mLength, width, height)) {
-			// Its PNG not read when the cache had it (the reader still at it).
-			if (!tRawPNGBuffer.mData) tRawPNGBuffer = gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, tRawPNGBuffer.mLength);
-			argb32Buffer = loadBufferFromRawPNGBuffer(tRawPNGBuffer, tBytesPerLine, tHeight, 1, downscale);
+			if (downscale <= 1 || !readN3DSDownscaleSourceSprite(&argb32Buffer, tRawPNGBuffer.mLength, tWidth, tHeight)) {
+				// Its PNG not read when a cache had it (the reader still at it).
+				if (!tRawPNGBuffer.mData) tRawPNGBuffer = gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, tRawPNGBuffer.mLength);
+				argb32Buffer = loadBufferFromRawPNGBuffer(tRawPNGBuffer, tBytesPerLine, tHeight, 1, downscale);
+			}
 			if (downscale > 1) writeN3DSDownscaleCacheSprite(argb32Buffer, tRawPNGBuffer.mLength, width, height);
 		}
 #else
@@ -2931,7 +3058,8 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 		// Its smaller pixels in the cache: its PNG not read.
 		const int cacheDownscale = gPrismMugenSpriteFileReaderData.mDownscale;
-		Buffer pngBuffer = (cacheDownscale > 1 && sprite.mColorDepth != 8 && hasN3DSDownscaleCacheSprite(sprite.mDataLength, (sprite.mWidth + cacheDownscale - 1) / cacheDownscale, (sprite.mHeight + cacheDownscale - 1) / cacheDownscale))
+		Buffer pngBuffer = (cacheDownscale > 1 && sprite.mColorDepth != 8 && (hasN3DSDownscaleCacheSprite(sprite.mDataLength, (sprite.mWidth + cacheDownscale - 1) / cacheDownscale, (sprite.mHeight + cacheDownscale - 1) / cacheDownscale)
+				|| hasN3DSDownscaleSourceSprite(sprite.mDataLength, sprite.mWidth, sprite.mHeight)))
 			? makeBuffer(NULL, sprite.mDataLength)
 			: gPrismMugenSpriteFileReaderData.mReader.mReadBufferReadOnly(&gPrismMugenSpriteFileReaderData.mReader, sprite.mDataLength);
 #else
@@ -3287,11 +3415,12 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 	const auto n3dsCacheMode = gN3DSDownscaleCache.mMode;
 	const auto n3dsCacheHits = gN3DSDownscaleCache.mHits, n3dsCacheMisses = gN3DSDownscaleCache.mMisses;
+	const auto n3dsCacheDerived = gN3DSDownscaleCache.mDerived, n3dsCacheSourceFactor = gN3DSDownscaleCache.mSourceDownscale;
 	endN3DSDownscaleCache();
 #endif
 #if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
 	if (gN3DSSFF1LastMode) fprintf(stderr, "n3dssim: %s: sprite index %s, %u sprites streamed without their pixels read\n", tPath, gN3DSSFF1LastMode == 1 ? "read" : "made", gN3DSSFF1LastSkipped);
-	if (n3dsCacheMode != N3DS_DOWNSCALE_CACHE_OFF) fprintf(stderr, "n3dssim: %s: smaller sprites %s the cache: %u read, %u decoded\n", tPath, n3dsCacheMode == N3DS_DOWNSCALE_CACHE_READING ? "from" : "written to", n3dsCacheHits, n3dsCacheMisses);
+	if (n3dsCacheMode != N3DS_DOWNSCALE_CACHE_OFF) fprintf(stderr, "n3dssim: %s: smaller sprites %s the cache: %u read, %u decoded\n", tPath, n3dsCacheMode == N3DS_DOWNSCALE_CACHE_READING ? "from" : "written to", n3dsCacheHits, n3dsCacheMisses), (n3dsCacheDerived ? fprintf(stderr, "n3dssim: %u made from the cache at 1/%u\n", n3dsCacheDerived, n3dsCacheSourceFactor) : 0);
 	gPrismMugenSpriteFileReaderData.mReader = originalN3DSReader;
 	if (gN3DSSpritesLeftOut) fprintf(stderr, "n3dssim: %s: %d sprites left out, no room in the heap\n", tPath, gN3DSSpritesLeftOut);
 	if (gN3DSStreamedSprites) fprintf(stderr, "n3dssim: %s: %u sprites streamed (read when drawn)\n", tPath, gN3DSStreamedSprites);
@@ -3311,7 +3440,7 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 		if (gN3DSSFF1LastMode == 1) addN3DSPerfLine("  sprite index from the cache: %u sprites streamed without their pixels read", gN3DSSFF1LastSkipped);
 		if (gN3DSSFF1LastMode == 2) addN3DSPerfLine("  sprite index written to the cache");
 		if (n3dsCacheMode == N3DS_DOWNSCALE_CACHE_READING) addN3DSPerfLine("  smaller sprites from the cache: %u read, %u decoded", n3dsCacheHits, n3dsCacheMisses);
-		if (n3dsCacheMode == N3DS_DOWNSCALE_CACHE_WRITING) addN3DSPerfLine("  smaller sprites written to the cache: %u", n3dsCacheMisses);
+		if (n3dsCacheMode == N3DS_DOWNSCALE_CACHE_WRITING) addN3DSPerfLine("  smaller sprites written to the cache: %u (%u made from the cache at 1/%u, the rest decoded)", n3dsCacheMisses, n3dsCacheDerived, n3dsCacheSourceFactor);
 	}
 #endif
 

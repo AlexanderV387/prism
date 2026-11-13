@@ -137,9 +137,18 @@ namespace prism {
 	// bit worse rather than the last ones left out: Modern Kitana lost 103).
 	static int gN3DSSoundFileHalvings;
 
+	// The texture memory kept from a file's sounds: less for a small one
+	// (the fight's own, fight.snd and common.snd, 157 KB together, are
+	// loaded after both fighters' sounds: after New Kyouki's 6.4 MB they had
+	// none left, the announcer silent, while 44 MB were kept for sprites).
+	static const size_t SMALL_SOUND_FILE = 1024 * 1024;
+	static const size_t SMALL_SOUND_FILE_TEXTURE_RESERVE = 8 * 1024 * 1024;
+	static size_t gN3DSSoundTextureReserve = SOUND_TEXTURE_RESERVE;
+
 	void startN3DSSoundFile(size_t tFileSize) {
+		gN3DSSoundTextureReserve = tFileSize <= SMALL_SOUND_FILE ? SMALL_SOUND_FILE_TEXTURE_RESERVE : SOUND_TEXTURE_RESERVE;
 		const size_t freeLinear = linearSpaceFree();
-		const size_t forSounds = freeLinear > SOUND_TEXTURE_RESERVE ? freeLinear - SOUND_TEXTURE_RESERVE : 0;
+		const size_t forSounds = freeLinear > gN3DSSoundTextureReserve ? freeLinear - gN3DSSoundTextureReserve : 0;
 		gN3DSSoundFileBudget = size_t(forSounds * gN3DSSoundFileShare);
 		gN3DSSoundFileHalvings = 0;
 		for (size_t size = tFileSize; size > gN3DSSoundFileBudget && gN3DSSoundFileHalvings < 3; size /= 2) gN3DSSoundFileHalvings++;
@@ -158,6 +167,7 @@ namespace prism {
 	}
 
 	void endN3DSSoundFile() {
+		gN3DSSoundTextureReserve = SOUND_TEXTURE_RESERVE;
 		gN3DSSoundFileBudget = (size_t)-1;
 		gN3DSSoundFileShare = 1.0f;
 		gN3DSSoundFileHalvings = 0;
@@ -170,7 +180,7 @@ namespace prism {
 		const size_t freeLinear = linearSpaceFree();
 		for (;;) {
 			const size_t size = getShapedSize(tFrames, *oShape);
-			if (size + SOUND_TEXTURE_RESERVE <= freeLinear && size <= gN3DSSoundFileBudget) return 1;
+			if (size + gN3DSSoundTextureReserve <= freeLinear && size <= gN3DSSoundFileBudget) return 1;
 			if (!halveSoundShape(tInfo, oShape)) return 0;
 		}
 	}
