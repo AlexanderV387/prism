@@ -149,6 +149,11 @@ namespace prism {
 	// the DSP, the memory can differ from what the CPU has cached).
 	void checkN3DSLinearGuards(const char* tWhen) {
 		if (gIsStopping) return;
+		// At most twice a second (a load's steps come by the hundred).
+		static u64 lastCheck = 0;
+		const u64 now = osGetTime();
+		if (now - lastCheck < 500) return;
+		lastCheck = now;
 		checkN3DSHeapGuards(tWhen);
 		lock();
 		if (!gBlocks.empty()) {
@@ -239,7 +244,7 @@ namespace prism {
 	static const uint32_t HEAP_SLOTS = 1 << 17;   // 131072 blocks at most followed
 
 	typedef struct {
-		uintptr_t mAddress;   // given out (0: empty, 1: removed)
+		uintptr_t mAddress;   // given out (0: empty)
 		uint32_t mSize;
 		uint32_t mCaller;
 		uint16_t mFront;      // its front guard's size (more for an alignment)
@@ -273,10 +278,29 @@ namespace prism {
 		return NULL;
 	}
 
+	// A slot emptied, the ones after it moved back where their search would
+	// stop short (marked as removed instead, the slots filled with the marks
+	// and each search went through the whole table: the game seemed frozen at
+	// its start).
+	static void removeSlot(HeapSlot* tSlot) {
+		const uint32_t mask = HEAP_SLOTS - 1;
+		uint32_t hole = uint32_t(tSlot - gHeapSlots);
+		gHeapSlots[hole].mAddress = 0;
+		for (uint32_t j = (hole + 1) & mask; gHeapSlots[j].mAddress; j = (j + 1) & mask) {
+			const uint32_t home = slotOf(gHeapSlots[j].mAddress);
+			// Moved back when its home is not in (hole, j], going around.
+			const int isBetween = hole <= j ? (home > hole && home <= j) : (home > hole || home <= j);
+			if (isBetween) continue;
+			gHeapSlots[hole] = gHeapSlots[j];
+			gHeapSlots[j].mAddress = 0;
+			hole = j;
+		}
+	}
+
 	static int addSlot(uintptr_t tAddress, uint32_t tSize, uint32_t tCaller, uint16_t tFront) {
 		if (gHeapBlocks >= HEAP_SLOTS * 3 / 4) return 0;
 		for (uint32_t i = slotOf(tAddress), n = 0; n < HEAP_SLOTS; i = (i + 1) & (HEAP_SLOTS - 1), n++) {
-			if (gHeapSlots[i].mAddress <= 1) {
+			if (!gHeapSlots[i].mAddress) {
 				gHeapSlots[i] = { tAddress, tSize, tCaller, tFront };
 				gHeapBlocks++;
 				return 1;
@@ -307,7 +331,7 @@ namespace prism {
 		const HeapSlot* before = NULL;
 		for (uint32_t i = 0; i < HEAP_SLOTS; i++) {
 			const HeapSlot& other = gHeapSlots[i];
-			if (other.mAddress <= 1 || other.mAddress >= tSlot.mAddress) continue;
+			if (!other.mAddress || other.mAddress >= tSlot.mAddress) continue;
 			if (!before || other.mAddress > before->mAddress) before = &other;
 		}
 		if (before) logErrorFormat("Heap block before it: %p, %u bytes, asked for by 0x%08lX.", (void*)before->mAddress, (unsigned)before->mSize, (unsigned long)before->mCaller);
@@ -331,7 +355,7 @@ namespace prism {
 		if (gIsHeapStopping) return;
 		heapLock();
 		for (uint32_t i = 0; i < HEAP_SLOTS; i++) {
-			if (gHeapSlots[i].mAddress <= 1) continue;
+			if (!gHeapSlots[i].mAddress) continue;
 			if (!checkHeapSlot(gHeapSlots[i], tWhen)) {
 				heapUnlock();
 				abortSystem();
@@ -371,7 +395,7 @@ namespace prism {
 			abortSystem();
 		}
 		const uint16_t front = slot->mFront;
-		slot->mAddress = 1;
+		removeSlot(slot);
 		gHeapBlocks--;
 		heapUnlock();
 		realFree((uint8_t*)tMemory - front);
