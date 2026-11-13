@@ -267,6 +267,14 @@ namespace prism {
 		beginAllocatorOperation();
 		uint8_t* base = (uint8_t*)__real_linearMemAlign(tSize + 2 * GUARD, tAlignment);
 		endAllocatorOperation();
+		// None left free: libctru would start its pool again over the whole
+		// linear memory at the next allocation (see linearguard_3ds.cpp).
+		if (base && !linearSpaceFree()) {
+			beginAllocatorOperation();
+			__real_linearFree(base);
+			endAllocatorOperation();
+			base = NULL;
+		}
 		const size_t realSize = base ? linearGetSize(base) : 0;
 		const size_t freeAfter = linearSpaceFree();
 		recordOperation(0, base ? base + GUARD : NULL, tSize, tCaller, freeBefore, freeAfter);

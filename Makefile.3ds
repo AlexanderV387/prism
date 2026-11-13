@@ -14,7 +14,7 @@ OBJS += 3ds/system_3ds.o 3ds/drawing_3ds.o 3ds/texture_3ds.o 3ds/log_3ds.o 3ds/p
 3ds/input_3ds.o 3ds/screeneffect_3ds.o \
 3ds/sound_3ds.o 3ds/soundeffect_3ds.o 3ds/thread_3ds.o 3ds/windowfocusscreen_3ds.o
 
-OBJS += 3ds/lineardiag_3ds.o
+OBJS += 3ds/lineardiag_3ds.o 3ds/linearguard_3ds.o
 
 OBJDIR = build_3ds
 BINDIR = bin_3ds
