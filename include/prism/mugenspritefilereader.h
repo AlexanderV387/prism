@@ -64,6 +64,11 @@ void setMugenSpriteFileReaderToNotUsePalette();
 // they are): a 1280x720 stage's are drawn at a third of their size.
 void setMugenSpriteFileReaderDownscale(int tFactor);
 int getMugenSpriteFileReaderDownscale();
+// [3DS] The texture memory a sprite file's true color sprites (SFF v2's
+// PNG24 and PNG32: kept as they are, never let go) would take read
+// tFactor times smaller, from its sprite list alone; -1 when it cannot
+// tell (an SFF v1, a file that cannot be read).
+long long estimateMugenSpriteFileTrueColorTextureBytes(const char* tPath, int tFactor);
 void setMugenSpriteFileReaderCustomFunctionsAndForceARGB16(TextureData(*mCustomLoadTextureFromARGB16Buffer)(const Buffer&, int, int), TextureData(*mCustomLoadTextureFromARGB32Buffer)(const Buffer&, int, int), TextureData(*mCustomLoadPalettedTextureFrom8BitBuffer)(const Buffer&, int, int, int));
 void setMugenSpriteFileReaderSubTextureSplit(int tSubTextureSplitMin, int tSubTextureSplitMax);
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)

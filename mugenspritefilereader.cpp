@@ -3466,6 +3466,47 @@ void setMugenSpriteFileReaderCustomFunctionsAndForceARGB16(TextureData(*tCustomL
 	gPrismMugenSpriteFileReaderData.mIsWritingDreamcastOptimized = 1;
 }
 
+// The texels of a side cut into pieces as breakImageBufferUpIntoMultipleBuffers
+// cuts it, each piece padded to a power of two (at least 8) by the texture.
+static long long getPaddedTexelLength(int tLength) {
+	long long ret = 0;
+	while (tLength > 0) {
+		const int piece = getMaximumSizeFit(tLength);
+		int padded = 8;
+		while (padded < piece) padded *= 2;
+		ret += padded;
+		tLength -= piece;
+	}
+	return ret;
+}
+
+long long estimateMugenSpriteFileTrueColorTextureBytes(const char* tPath, int tFactor) {
+	if (tFactor < 1) tFactor = 1;
+	FileHandler file = fileOpen(tPath, O_RDONLY);
+	if (file == FILEHND_INVALID) return -1;
+	SFFHeader2 header;
+	long long ret = -1;
+	if (fileRead(file, &header, sizeof(SFFHeader2)) == sizeof(SFFHeader2) && !memcmp(header.mSignature, "ElecbyteSpr", 11) && header.mVersion[3] == 2
+		&& header.mSpriteTotal < 100000) {
+		std::vector<SFFSprite2> sprites(header.mSpriteTotal);
+		fileSeek(file, header.mSpriteOffset, SEEK_SET);
+		const size_t length = sprites.size() * sizeof(SFFSprite2);
+		if (!length || fileRead(file, sprites.data(), length) == length) {
+			ret = 0;
+			for (const auto& sprite : sprites) {
+				if (!sprite.mDataLength) continue;   // linked to another
+				if (sprite.mFormat != 11 && sprite.mFormat != 12) continue;
+				// The portraits read whole (see loadSingleSprite2KeepingPortraitsWhole).
+				const int factor = sprite.mGroupNo == 9000 ? 1 : tFactor;
+				const int w = (sprite.mWidth + factor - 1) / factor, h = (sprite.mHeight + factor - 1) / factor;
+				ret += getPaddedTexelLength(w) * getPaddedTexelLength(h) * 4;
+			}
+		}
+	}
+	fileClose(file);
+	return ret;
+}
+
 void setMugenSpriteFileReaderSubTextureSplit(int tSubTextureSplitMin, int tSubTextureSplitMax)
 {
 	gPrismMugenSpriteFileReaderData.mSubTextureSplitMin = tSubTextureSplitMin;
