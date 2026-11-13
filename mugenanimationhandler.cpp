@@ -1486,6 +1486,7 @@ static void findMugenAnimationScreenStretch(MugenAnimationHandlerElement* e, Dra
 static void drawSingleMugenAnimationOnItsScreen(void* tCaller, MugenAnimationHandlerElement& tData);
 
 static void drawSingleMugenAnimation(void* tCaller, MugenAnimationHandlerElement& tData) {
+	if (tData.mScreen < 0) return;   // on neither
 	if (!tData.mScreen) {
 		drawSingleMugenAnimationOnItsScreen(tCaller, tData);
 		return;
