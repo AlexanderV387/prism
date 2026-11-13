@@ -2,6 +2,7 @@
 
 #include <string>
 #include <map>
+#include <set>
 
 #include "datastructures.h"
 #include "texture.h"
@@ -47,6 +48,13 @@ typedef struct {
 
 MugenSpriteFile loadMugenSpriteFile(const char * tPath, int tHasPaletteFile, const char* tOptionalPaletteFile);
 MugenSpriteFile loadMugenSpriteFilePortraits(const char * tPath, int tHasPaletteFile, const char* tOptionalPaletteFile);
+// Each sprite's size (group, item: width, height), from the file's sprite
+// list (SFF v1: each one's PCX header), no pixels read.
+std::map<std::pair<int, int>, Vector2DI> getMugenSpriteFileSpriteSizes(const char* tPath);
+// Only these sprites of a file (a stage's for a menu's picture of it),
+// read at the reader's factor (setMugenSpriteFileReaderDownscale), kept
+// in the SD card's cache as the whole files' are.
+MugenSpriteFile loadMugenSpriteFileSomeSprites(const char* tPath, const std::set<std::pair<int, int>>& tSprites);
 // Only sprite tGroup,tItem of a file (a character's standing one for a
 // menu); a high resolution true color one read smaller to about
 // tMaximumHeight (0: as it is).

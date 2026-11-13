@@ -174,6 +174,7 @@ static struct {
 	int mPartialAmount = 2;        // the load stops once it has them
 	int mIsPartialPortraits = 1;   // the portraits (the portrait cache's)
 	int mPartialMaxHeight = 0;     // a single true color sprite higher read smaller to about it
+	std::set<std::pair<int, int>> mPartialSet;   // or these sprites (when not empty)
 	int mHasPaletteFile;
 	int mIsUsingRealPalette;
 	int mPaletteID;
@@ -2364,6 +2365,7 @@ static void addN3DSPortraitCacheEntry(const MugenSpriteFile& tFile) {
 #endif
 
 static int isWantedPartialSprite(int tGroup, int tItem) {
+	if (!gPrismMugenSpriteFileReaderData.mPartialSet.empty()) return gPrismMugenSpriteFileReaderData.mPartialSet.count(std::make_pair(tGroup, tItem)) > 0;
 	return tGroup == gPrismMugenSpriteFileReaderData.mPartialGroup && tItem >= gPrismMugenSpriteFileReaderData.mPartialMinItem && tItem <= gPrismMugenSpriteFileReaderData.mPartialMaxItem;
 }
 
@@ -3405,7 +3407,13 @@ static MugenSpriteFile loadMugenSpriteFileGeneral(const char * tPath, int tHasPa
 	gN3DSFileBufferSize = 0;
 #endif
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+	// A single sprite read alone has a cache of its own (a stage's preview).
 	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits) beginN3DSDownscaleCache(tPath, uint32_t(getFileSize(tPath)), gPrismMugenSpriteFileReaderData.mDownscale);
+	else if (!gPrismMugenSpriteFileReaderData.mIsPartialPortraits) {
+		std::string key = std::string(tPath) + "#" + std::to_string(gPrismMugenSpriteFileReaderData.mPartialGroup) + "," + std::to_string(gPrismMugenSpriteFileReaderData.mPartialMinItem);
+		for (const auto& sprite : gPrismMugenSpriteFileReaderData.mPartialSet) key += "," + std::to_string(sprite.first) + "-" + std::to_string(sprite.second);
+		beginN3DSDownscaleCache(key.c_str(), uint32_t(getFileSize(tPath)), gPrismMugenSpriteFileReaderData.mDownscale);
+	}
 #endif
 
 	SFFSharedHeader header;
@@ -3486,6 +3494,21 @@ MugenSpriteFile loadMugenSpriteFile(const char * tPath, int tHasPaletteFile, con
 MugenSpriteFile loadMugenSpriteFilePortraits(const char * tPath, int tHasPaletteFile, const char* tOptionalPaletteFile) {
 	gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits = 1;
 	return loadMugenSpriteFileGeneral(tPath, tHasPaletteFile, tOptionalPaletteFile);
+}
+
+MugenSpriteFile loadMugenSpriteFileSomeSprites(const char* tPath, const std::set<std::pair<int, int>>& tSprites) {
+	auto& d = gPrismMugenSpriteFileReaderData;
+	d.mIsOnlyLoadingPortraits = 1;
+	d.mPartialSet = tSprites;
+	d.mPartialAmount = int(tSprites.size());
+	d.mIsPartialPortraits = 0;
+	d.mPartialMaxHeight = 0;
+	MugenSpriteFile ret = loadMugenSpriteFileGeneral(tPath, 0, "");
+	d.mPartialSet.clear();
+	d.mPartialAmount = 2;
+	d.mIsPartialPortraits = 1;
+	d.mIsOnlyLoadingPortraits = 0;
+	return ret;
 }
 
 MugenSpriteFile loadMugenSpriteFileSingleSprite(const char* tPath, int tHasPaletteFile, const char* tOptionalPaletteFile, int tGroup, int tItem, int tMaximumHeight) {
@@ -3670,6 +3693,44 @@ long long estimateMugenSpriteFileTrueColorTextureBytes(const char* tPath, int tF
 				const int factor = sprite.mGroupNo == 9000 ? 1 : tFactor;
 				const int w = (sprite.mWidth + factor - 1) / factor, h = (sprite.mHeight + factor - 1) / factor;
 				ret += getPaddedTexelLength(w) * getPaddedTexelLength(h) * 4;
+			}
+		}
+	}
+	fileClose(file);
+	return ret;
+}
+
+std::map<std::pair<int, int>, Vector2DI> getMugenSpriteFileSpriteSizes(const char* tPath) {
+	std::map<std::pair<int, int>, Vector2DI> ret;
+	FileHandler file = fileOpen(tPath, O_RDONLY);
+	if (file == FILEHND_INVALID) return ret;
+	SFFHeader2 header2;
+	if (fileRead(file, &header2, sizeof(SFFHeader2)) == sizeof(SFFHeader2) && !memcmp(header2.mSignature, "ElecbyteSpr", 11)) {
+		if (header2.mVersion[3] == 2 && header2.mSpriteTotal < 100000) {
+			std::vector<SFFSprite2> sprites(header2.mSpriteTotal);
+			fileSeek(file, header2.mSpriteOffset, SEEK_SET);
+			const size_t length = sprites.size() * sizeof(SFFSprite2);
+			if (!length || fileRead(file, sprites.data(), length) == length) {
+				for (const auto& sprite : sprites) ret[std::make_pair(int(sprite.mGroupNo), int(sprite.mItemNo))] = Vector2DI(sprite.mWidth, sprite.mHeight);
+			}
+		}
+		else {
+			// SFF v1: each sprite's PCX header after its subheader.
+			const SFFHeader* header = (const SFFHeader*)&header2;
+			std::vector<Vector2DI> sizes;
+			int32_t position = header->mFirstFileOffset;
+			for (int i = 0; i < header->mImageAmount && i < 100000 && position > 0; i++) {
+				SFFSubFileHeader subHeader;
+				fileSeek(file, size_t(position), SEEK_SET);
+				if (fileRead(file, &subHeader, sizeof(subHeader)) != sizeof(subHeader)) break;
+				Vector2DI size(0, 0);
+				PCXHeader pcx;
+				if (subHeader.mSubfileLength > int32_t(sizeof(PCXHeader)) && fileRead(file, &pcx, sizeof(pcx)) == sizeof(pcx)) size = Vector2DI(pcx.mMaxX - pcx.mMinX + 1, pcx.mMaxY - pcx.mMinY + 1);
+				else if (!subHeader.mSubfileLength && subHeader.mIndexOfPreciousSpriteCopy >= 0 && subHeader.mIndexOfPreciousSpriteCopy < int(sizes.size())) size = sizes[subHeader.mIndexOfPreciousSpriteCopy];
+				sizes.push_back(size);
+				ret[std::make_pair(int(subHeader.mGroup), int(subHeader.mImage))] = size;
+				if (subHeader.mNextFilePosition <= position) break;
+				position = subHeader.mNextFilePosition;
 			}
 		}
 	}
