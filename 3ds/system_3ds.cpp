@@ -25,15 +25,7 @@ extern "C" {
 // what was asked for.
 static volatile size_t gN3DSLastFailedNewSize;
 
-#ifdef N3DS_LINEAR_DIAG
-namespace prism { void setN3DSHeapCaller(uint32_t tCaller); }   // 3ds/lineardiag_3ds.cpp
-#endif
-
 void* operator new(size_t tSize) {
-#ifdef N3DS_LINEAR_DIAG
-	// The heap's diagnosis: who asked for it (not operator new itself).
-	prism::setN3DSHeapCaller(uint32_t(uintptr_t(__builtin_return_address(0))));
-#endif
 	for (;;) {
 		void* ret = malloc(tSize ? tSize : 1);
 		if (ret) return ret;
