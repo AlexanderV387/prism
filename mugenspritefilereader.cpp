@@ -167,7 +167,13 @@ typedef struct {
 } PCXHeader;
 
 static struct {
-	int mIsOnlyLoadingPortraits;
+	int mIsOnlyLoadingPortraits;   // only some sprites (below): the portraits (9000,0 and 1) or another
+	int mPartialGroup = 9000;
+	int mPartialMinItem = 0;
+	int mPartialMaxItem = 1;
+	int mPartialAmount = 2;        // the load stops once it has them
+	int mIsPartialPortraits = 1;   // the portraits (the portrait cache's)
+	int mPartialMaxHeight = 0;     // a single true color sprite higher read smaller to about it
 	int mHasPaletteFile;
 	int mIsUsingRealPalette;
 	int mPaletteID;
@@ -2343,19 +2349,23 @@ static void saveN3DSPortraitCache() {
 }
 
 static const std::vector<uint32_t>* findN3DSPortraitCacheEntry() {
-	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits) return NULL;
+	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits || !gPrismMugenSpriteFileReaderData.mIsPartialPortraits) return NULL;
 	loadN3DSPortraitCache();
 	const auto it = gN3DSPortraitCache.mEntries.find(gN3DSPortraitCache.mKey);
 	return it == gN3DSPortraitCache.mEntries.end() ? NULL : &it->second;
 }
 
 static void addN3DSPortraitCacheEntry(const MugenSpriteFile& tFile) {
-	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits) return;
+	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits || !gPrismMugenSpriteFileReaderData.mIsPartialPortraits) return;
 	if (gN3DSPortraitCache.mFound.empty() || gN3DSPortraitCache.mFound.size() != tFile.mAllSprites.size()) return;
 	gN3DSPortraitCache.mEntries[gN3DSPortraitCache.mKey] = gN3DSPortraitCache.mFound;
 	saveN3DSPortraitCache();
 }
 #endif
+
+static int isWantedPartialSprite(int tGroup, int tItem) {
+	return tGroup == gPrismMugenSpriteFileReaderData.mPartialGroup && tItem >= gPrismMugenSpriteFileReaderData.mPartialMinItem && tItem <= gPrismMugenSpriteFileReaderData.mPartialMaxItem;
+}
 
 static void logSingleSFFSubFile(const SFFSubFileHeader& tSubHeader) {
 	gLoadedSubFileAmount++;
@@ -2647,9 +2657,9 @@ static void loadSingleSFFFileWithHeaderAtDownscale(const SFFSubFileHeader& subHe
 		removeAllPalettesExceptFirst(tDst);
 	}
 
-	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits || (subHeader.mGroup == 9000 && subHeader.mImage <= 1)) {
+	if (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits || isWantedPartialSprite(subHeader.mGroup, subHeader.mImage)) {
 #ifdef __3DS__
-		if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits) {
+		if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && gPrismMugenSpriteFileReaderData.mIsPartialPortraits) {
 			gN3DSPortraitCache.mFound.push_back(gPrismMugenSpriteFileReaderData.mReader.mGetCurrentOffset(&gPrismMugenSpriteFileReaderData.mReader) - sizeof(SFFSubFileHeader));
 		}
 #endif
@@ -2745,7 +2755,7 @@ static MugenSpriteFile loadMugenSpriteFile1(int tHasPaletteFile, const char* tOp
 		gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, header.mFirstFileOffset);
 		while (!gPrismMugenSpriteFileReaderData.mReader.mIsOver(&gPrismMugenSpriteFileReaderData.mReader)) {
 			loadSingleSFFFile(&ret);
-			if(gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && ret.mAllSprites.size() == 2) break;
+			if(gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && int(ret.mAllSprites.size()) >= gPrismMugenSpriteFileReaderData.mPartialAmount) break;
 		}
 	}
 #if defined(N3DS_HEAP_GUARD) && (defined(__3DS__) || defined(N3DS_TEXTURE_SIM))
@@ -2987,7 +2997,7 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 	verboseInteger(sprite.mItemNo);
 	verboseInteger(sprite.mFormat);
 
-	if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && (sprite.mGroupNo != 9000 || sprite.mItemNo > 1)) {
+	if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && !isWantedPartialSprite(sprite.mGroupNo, sprite.mItemNo)) {
 		return;
 	}
 
@@ -3089,6 +3099,17 @@ static void loadSingleSprite2KeepingPortraitsWhole(SFFHeader2* tHeader, MugenSpr
 		gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, position);
 		if (group == 9000) gPrismMugenSpriteFileReaderData.mDownscale = 1;
 	}
+	// A single sprite wanted at about some height: a high resolution one read smaller.
+	if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && gPrismMugenSpriteFileReaderData.mPartialMaxHeight > 0) {
+		const uint32_t position = gPrismMugenSpriteFileReaderData.mReader.mGetCurrentOffset(&gPrismMugenSpriteFileReaderData.mReader);
+		SFFSprite2 sprite;
+		gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &sprite, sizeof(sprite));
+		gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, position);
+		const int maxHeight = gPrismMugenSpriteFileReaderData.mPartialMaxHeight;
+		if (isWantedPartialSprite(sprite.mGroupNo, sprite.mItemNo) && (sprite.mFormat == 11 || sprite.mFormat == 12) && sprite.mHeight > maxHeight) {
+			gPrismMugenSpriteFileReaderData.mDownscale = (sprite.mHeight + maxHeight - 1) / maxHeight;
+		}
+	}
 	loadSingleSprite2(tHeader, tDst, tHasPalette);
 	gPrismMugenSpriteFileReaderData.mDownscale = downscale;
 }
@@ -3105,9 +3126,9 @@ static void loadSprites2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tHasPal
 #endif
 		loadSingleSprite2KeepingPortraitsWhole(tHeader, tDst, tHasPalette);
 #ifdef __3DS__
-		if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && tDst->mAllSprites.size() > spritesBefore) gN3DSPortraitCache.mFound.push_back(i);
+		if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && gPrismMugenSpriteFileReaderData.mIsPartialPortraits && tDst->mAllSprites.size() > spritesBefore) gN3DSPortraitCache.mFound.push_back(i);
 #endif
-		if(gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && tDst->mAllSprites.size() == 2) break;
+		if(gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && int(tDst->mAllSprites.size()) >= gPrismMugenSpriteFileReaderData.mPartialAmount) break;
 	}
 }
 
@@ -3465,6 +3486,26 @@ MugenSpriteFile loadMugenSpriteFile(const char * tPath, int tHasPaletteFile, con
 MugenSpriteFile loadMugenSpriteFilePortraits(const char * tPath, int tHasPaletteFile, const char* tOptionalPaletteFile) {
 	gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits = 1;
 	return loadMugenSpriteFileGeneral(tPath, tHasPaletteFile, tOptionalPaletteFile);
+}
+
+MugenSpriteFile loadMugenSpriteFileSingleSprite(const char* tPath, int tHasPaletteFile, const char* tOptionalPaletteFile, int tGroup, int tItem, int tMaximumHeight) {
+	auto& d = gPrismMugenSpriteFileReaderData;
+	d.mIsOnlyLoadingPortraits = 1;
+	d.mPartialGroup = tGroup;
+	d.mPartialMinItem = tItem;
+	d.mPartialMaxItem = tItem;
+	d.mPartialAmount = 1;
+	d.mIsPartialPortraits = 0;
+	d.mPartialMaxHeight = tMaximumHeight;
+	MugenSpriteFile ret = loadMugenSpriteFileGeneral(tPath, tHasPaletteFile, tOptionalPaletteFile);
+	d.mPartialGroup = 9000;
+	d.mPartialMinItem = 0;
+	d.mPartialMaxItem = 1;
+	d.mPartialAmount = 2;
+	d.mIsPartialPortraits = 1;
+	d.mPartialMaxHeight = 0;
+	d.mIsOnlyLoadingPortraits = 0;
+	return ret;
 }
 
 MugenSpriteFile loadMugenSpriteFileWithoutPalette(const std::string& tPath)

@@ -47,6 +47,10 @@ typedef struct {
 
 MugenSpriteFile loadMugenSpriteFile(const char * tPath, int tHasPaletteFile, const char* tOptionalPaletteFile);
 MugenSpriteFile loadMugenSpriteFilePortraits(const char * tPath, int tHasPaletteFile, const char* tOptionalPaletteFile);
+// Only sprite tGroup,tItem of a file (a character's standing one for a
+// menu); a high resolution true color one read smaller to about
+// tMaximumHeight (0: as it is).
+MugenSpriteFile loadMugenSpriteFileSingleSprite(const char* tPath, int tHasPaletteFile, const char* tOptionalPaletteFile, int tGroup, int tItem, int tMaximumHeight);
 
 void unloadMugenSpriteFile(MugenSpriteFile* tFile);
 void unloadMugenSpriteFileSprite(MugenSpriteFileSprite* tSprite);
