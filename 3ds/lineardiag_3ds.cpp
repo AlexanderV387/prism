@@ -215,11 +215,22 @@ extern "C" {
 // over and who asked for it (C++'s through operator new: its caller) in the
 // error log. Its table is outside the heap.
 
+#include <reent.h>
+
+// newlib's own allocator, under both its names (malloc and _malloc_r, the
+// one its own functions call: a stdio buffer made by setvbuf through malloc
+// was let go by fclose through _free_r, which read the guard as its header
+// and the game stopped at its start).
 extern "C" {
-	void* __real_malloc(size_t tSize);
-	void __real_free(void* tMemory);
-	void* __real_memalign(size_t tAlignment, size_t tSize);
+	void* __real__malloc_r(struct _reent* tReent, size_t tSize);
+	void __real__free_r(struct _reent* tReent, void* tMemory);
+	void* __real__memalign_r(struct _reent* tReent, size_t tAlignment, size_t tSize);
+	void* __real__realloc_r(struct _reent* tReent, void* tMemory, size_t tSize);
 }
+static void* realMalloc(size_t tSize) { return __real__malloc_r(_REENT, tSize); }
+static void realFree(void* tMemory) { __real__free_r(_REENT, tMemory); }
+static void* realMemalign(size_t tAlignment, size_t tSize) { return __real__memalign_r(_REENT, tAlignment, tSize); }
+static void* realRealloc(void* tMemory, size_t tSize) { return __real__realloc_r(_REENT, tMemory, tSize); }
 
 namespace prism {
 
@@ -331,7 +342,7 @@ namespace prism {
 
 	static void* heapAllocate(size_t tSize, size_t tAlignment, uint32_t tCaller) {
 		const size_t front = tAlignment > HEAP_GUARD ? tAlignment : HEAP_GUARD;
-		uint8_t* base = (uint8_t*)(tAlignment > 8 ? __real_memalign(tAlignment, tSize + front + HEAP_GUARD) : __real_malloc(tSize + front + HEAP_GUARD));
+		uint8_t* base = (uint8_t*)(tAlignment > 8 ? realMemalign(tAlignment, tSize + front + HEAP_GUARD) : realMalloc(tSize + front + HEAP_GUARD));
 		if (!base) return NULL;
 		uint8_t* p = base + front;
 		memset(p - HEAP_GUARD, HEAP_PATTERN, HEAP_GUARD);
@@ -341,8 +352,8 @@ namespace prism {
 			gHeapUntracked++;
 			heapUnlock();
 			// Not followed: given out without guards (its own malloc).
-			__real_free(base);
-			return tAlignment > 8 ? __real_memalign(tAlignment, tSize) : __real_malloc(tSize);
+			realFree(base);
+			return tAlignment > 8 ? realMemalign(tAlignment, tSize) : realMalloc(tSize);
 		}
 		heapUnlock();
 		return p;
@@ -363,7 +374,7 @@ namespace prism {
 		slot->mAddress = 1;
 		gHeapBlocks--;
 		heapUnlock();
-		__real_free((uint8_t*)tMemory - front);
+		realFree((uint8_t*)tMemory - front);
 		return 1;
 	}
 
@@ -378,49 +389,49 @@ namespace prism {
 
 extern "C" {
 
-	void* __real_realloc(void* tMemory, size_t tSize);
-
 	static uint32_t takeCaller(void* tReturnAddress) {
 		const uint32_t caller = prism::gNewCaller ? prism::gNewCaller : uint32_t(uintptr_t(tReturnAddress));
 		prism::gNewCaller = 0;
 		return caller;
 	}
 
-	void* __wrap_malloc(size_t tSize) {
-		return prism::heapAllocate(tSize, 8, takeCaller(__builtin_return_address(0)));
+	static void freeAny(void* tMemory) {
+		if (!tMemory) return;
+		if (!prism::heapFree(tMemory)) realFree(tMemory);
 	}
 
-	void* __wrap_memalign(size_t tAlignment, size_t tSize) {
-		return prism::heapAllocate(tSize, tAlignment, takeCaller(__builtin_return_address(0)));
+	static void* reallocAny(void* tMemory, size_t tSize, uint32_t tCaller) {
+		if (!tMemory) return prism::heapAllocate(tSize, 8, tCaller);
+		const size_t oldSize = prism::heapSize(tMemory);
+		if (oldSize == (size_t)-1) return realRealloc(tMemory, tSize);   // not followed
+		if (!tSize) {
+			freeAny(tMemory);
+			return NULL;
+		}
+		void* p = prism::heapAllocate(tSize, 8, tCaller);
+		if (!p) return NULL;
+		memcpy(p, tMemory, oldSize < tSize ? oldSize : tSize);
+		freeAny(tMemory);
+		return p;
 	}
 
-	void* __wrap_calloc(size_t tAmount, size_t tSize) {
+	static void* callocAny(size_t tAmount, size_t tSize, uint32_t tCaller) {
 		const size_t size = tAmount * tSize;
-		void* p = prism::heapAllocate(size, 8, takeCaller(__builtin_return_address(0)));
+		void* p = prism::heapAllocate(size, 8, tCaller);
 		if (p) memset(p, 0, size);
 		return p;
 	}
 
-	void __wrap_free(void* tMemory) {
-		if (!tMemory) return;
-		if (!prism::heapFree(tMemory)) __real_free(tMemory);
-	}
-
-	void* __wrap_realloc(void* tMemory, size_t tSize) {
-		if (!tMemory) return prism::heapAllocate(tSize, 8, takeCaller(__builtin_return_address(0)));
-		const size_t oldSize = prism::heapSize(tMemory);
-		if (oldSize == (size_t)-1) return __real_realloc(tMemory, tSize);   // not followed
-		if (!tSize) {
-			__wrap_free(tMemory);
-			return NULL;
-		}
-		void* p = prism::heapAllocate(tSize, 8, takeCaller(__builtin_return_address(0)));
-		if (!p) return NULL;
-		memcpy(p, tMemory, oldSize < tSize ? oldSize : tSize);
-		__wrap_free(tMemory);
-		return p;
-	}
+	void* __wrap_malloc(size_t tSize) { return prism::heapAllocate(tSize, 8, takeCaller(__builtin_return_address(0))); }
+	void* __wrap__malloc_r(struct _reent*, size_t tSize) { return prism::heapAllocate(tSize, 8, takeCaller(__builtin_return_address(0))); }
+	void* __wrap_memalign(size_t tAlignment, size_t tSize) { return prism::heapAllocate(tSize, tAlignment, takeCaller(__builtin_return_address(0))); }
+	void* __wrap__memalign_r(struct _reent*, size_t tAlignment, size_t tSize) { return prism::heapAllocate(tSize, tAlignment, takeCaller(__builtin_return_address(0))); }
+	void* __wrap_calloc(size_t tAmount, size_t tSize) { return callocAny(tAmount, tSize, takeCaller(__builtin_return_address(0))); }
+	void* __wrap__calloc_r(struct _reent*, size_t tAmount, size_t tSize) { return callocAny(tAmount, tSize, takeCaller(__builtin_return_address(0))); }
+	void __wrap_free(void* tMemory) { freeAny(tMemory); }
+	void __wrap__free_r(struct _reent*, void* tMemory) { freeAny(tMemory); }
+	void* __wrap_realloc(void* tMemory, size_t tSize) { return reallocAny(tMemory, tSize, takeCaller(__builtin_return_address(0))); }
+	void* __wrap__realloc_r(struct _reent*, void* tMemory, size_t tSize) { return reallocAny(tMemory, tSize, takeCaller(__builtin_return_address(0))); }
 
 }
-
 #endif
