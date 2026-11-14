@@ -1,5 +1,8 @@
 #pragma once
 
+#include <vector>
+#include <stdint.h>
+
 #include "physics.h"
 #include "texture.h"
 #include "file.h"
@@ -76,6 +79,11 @@ int getDrawingScreen();
 // or two later (1 then, else 0). Only the 3DS's bottom screen (1) has it.
 void requestDrawingScreenAverageColor(int tScreen, const GeoRectangle2D& tLeftOut);
 int getDrawingScreenAverageColor(int tScreen, Vector3D* oColor);
+// A small picture (tWidth x tHeight, BGRA bytes) of the game's screen as
+// the next frame shows it, there a frame or two later (1 then, else 0).
+// Only the 3DS's top screen (0) has it.
+void requestDrawingScreenPicture(int tScreen, int tWidth, int tHeight);
+int getDrawingScreenPicture(int tScreen, std::vector<uint8_t>* oBGRA);
 
 void scaleDrawing(float tFactor, const Position& tScalePosition);
 void scaleDrawing2D(const Vector2D& tFactor, const Position2D& tScalePosition);

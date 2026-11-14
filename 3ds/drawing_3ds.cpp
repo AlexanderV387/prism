@@ -198,6 +198,65 @@ namespace prism {
 		return 1;
 	}
 
+	// A small picture of the game's screen on the top screen, read from the
+	// framebuffer shown (the one the frame just drawn went to).
+	static int gIsPictureRequested;
+	static int gHasPicture;
+	static int gPictureWidth, gPictureHeight;
+	static std::vector<uint8_t> gPicture;
+	static unsigned int gPictureFrame;
+	static unsigned int gFramesStarted;
+
+	void requestDrawingScreenPicture(int tScreen, int tWidth, int tHeight) {
+		if (tScreen != 0 || tWidth <= 0 || tHeight <= 0) return;
+		gIsPictureRequested = 1;
+		gHasPicture = 0;
+		gPictureWidth = tWidth;
+		gPictureHeight = tHeight;
+		gPictureFrame = gFramesStarted;
+	}
+
+	int getDrawingScreenPicture(int tScreen, std::vector<uint8_t>* oBGRA) {
+		if (tScreen != 0 || !gHasPicture) return 0;
+		oBGRA->swap(gPicture);
+		gHasPicture = 0;
+		return 1;
+	}
+
+	static void readTopPicture() {
+		// The buffer shown, not the one the next frame goes to.
+		gfxSetDoubleBuffering(GFX_TOP, false);
+		u16 width = 0, height = 0;
+		u8* framebuffer = gfxGetFramebuffer(GFX_TOP, GFX_LEFT, &width, &height);
+		gfxSetDoubleBuffering(GFX_TOP, true);
+		gIsPictureRequested = 0;
+		if (!framebuffer || !width || !height || gfxGetScreenFormat(GFX_TOP) != GSP_BGR8_OES) return;
+		GSPGPU_InvalidateDataCache(framebuffer, u32(width) * height * 3);
+		const ScreenSize sz = getScreenSize();
+		const float x0 = gN3DSDrawingData.mScreenOffset.x, y0 = gN3DSDrawingData.mScreenOffset.y;
+		const float sx = float(sz.x * gN3DSDrawingData.mScreenScale.x) / gPictureWidth, sy = float(sz.y * gN3DSDrawingData.mScreenScale.y) / gPictureHeight;
+		gPicture.assign(size_t(gPictureWidth) * gPictureHeight * 4, 255);
+		for (int y = 0; y < gPictureHeight; y++) {
+			for (int x = 0; x < gPictureWidth; x++) {
+				// Four samples in the pixel's part of the screen.
+				u32 sum[3] = { 0, 0, 0 };
+				for (int k = 0; k < 4; k++) {
+					int px = int(x0 + (x + 0.25f + 0.5f * (k & 1)) * sx), py = int(y0 + (y + 0.25f + 0.5f * (k >> 1)) * sy);
+					px = std::min(std::max(px, 0), int(height) - 1);
+					py = std::min(std::max(py, 0), int(width) - 1);
+					const u8* pixel = framebuffer + (u32(px) * width + (width - 1 - py)) * 3;
+					for (int c = 0; c < 3; c++) sum[c] += pixel[c];
+				}
+				uint8_t* out = &gPicture[(size_t(y) * gPictureWidth + x) * 4];
+				out[0] = uint8_t(sum[0] / 4);
+				out[1] = uint8_t(sum[1] / 4);
+				out[2] = uint8_t(sum[2] / 4);
+				out[3] = 255;
+			}
+		}
+		gHasPicture = 1;
+	}
+
 	static void readBottomAverageColor() {
 		u16 width = 0, height = 0;
 		u8* framebuffer = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, &width, &height);
@@ -391,6 +450,8 @@ namespace prism {
 		advanceN3DSTextureFrame();
 		// The last frame's done (C3D_FrameBegin waited for it).
 		if (gIsBottomAverageRequested && gN3DSDrawingData.mBottomFramesLeft == 3) readBottomAverageColor();
+		if (gIsPictureRequested && gFramesStarted > gPictureFrame) readTopPicture();
+		gFramesStarted++;
 #ifdef N3DS_LINEAR_DIAG
 		// The linear memory's guards, twice a second (3ds/lineardiag_3ds.cpp).
 		static unsigned int diagnosedFrames = 0;

@@ -501,6 +501,40 @@ namespace prism {
 		gIsBottomAverageRequested = 0;
 	}
 
+	// A small picture of the game's screen (the top screen's picture made for it).
+	static int gIsPictureRequested, gHasPicture, gPictureWidth, gPictureHeight;
+	static std::vector<uint8_t> gPicture;
+	void requestDrawingScreenPicture(int tScreen, int tWidth, int tHeight) {
+		if (tScreen != 0 || tWidth <= 0 || tHeight <= 0) return;
+		gIsPictureRequested = 1;
+		gHasPicture = 0;
+		gPictureWidth = tWidth;
+		gPictureHeight = tHeight;
+	}
+	int getDrawingScreenPicture(int tScreen, std::vector<uint8_t>* oBGRA) {
+		if (tScreen != 0 || !gHasPicture) return 0;
+		oBGRA->swap(gPicture);
+		gHasPicture = 0;
+		return 1;
+	}
+	static void computePicture() {
+		std::vector<float> fb;
+		renderShot(fb);
+		const ScreenSize sz = getScreenSize();
+		const float scale = fminf(400 / (float)sz.x, SHOT_H / (float)sz.y);
+		const float x0 = floorf((SHOT_W - sz.x * scale) / 2), y0 = floorf((SHOT_H - sz.y * scale) / 2);
+		const float sx = sz.x * scale / gPictureWidth, sy = sz.y * scale / gPictureHeight;
+		gPicture.assign(size_t(gPictureWidth) * gPictureHeight * 4, 255);
+		for (int y = 0; y < gPictureHeight; y++) for (int x = 0; x < gPictureWidth; x++) {
+			const int px = std::min(SHOT_W - 1, int(x0 + (x + 0.5f) * sx)), py = std::min(SHOT_H - 1, int(y0 + (y + 0.5f) * sy));
+			const float* c = &fb[(py * SHOT_W + px) * 3];
+			uint8_t* out = &gPicture[(size_t(y) * gPictureWidth + x) * 4];
+			out[0] = uint8_t(c[2] * 255 + 0.5f); out[1] = uint8_t(c[1] * 255 + 0.5f); out[2] = uint8_t(c[0] * 255 + 0.5f); out[3] = 255;
+		}
+		gHasPicture = 1;
+		gIsPictureRequested = 0;
+	}
+
 	static void writeShot() {
 		std::vector<float> fb;
 		renderShot(fb);
@@ -546,10 +580,11 @@ namespace prism {
 	}
 
 	void waitForScreen() {}
-	void startDrawing() { gSim.mFrames++; advanceN3DSTextureFrame(); gSimList.clear(); gSimBottomList.clear(); gIsCollectingForAverage = gIsBottomAverageRequested; }
+	void startDrawing() { gSim.mFrames++; advanceN3DSTextureFrame(); gSimList.clear(); gSimBottomList.clear(); gIsCollectingForAverage = gIsBottomAverageRequested || gIsPictureRequested; }
 	void stopDrawing() {
 		if (isShotFrame(gSim.mFrames) && (!gSimList.empty() || !gSimBottomList.empty())) writeShot();
-		if (gIsCollectingForAverage && !gSimBottomList.empty()) computeBottomAverage();
+		if (gIsCollectingForAverage && gIsBottomAverageRequested && !gSimBottomList.empty()) computeBottomAverage();
+		if (gIsCollectingForAverage && gIsPictureRequested) computePicture();
 		gSimList.clear();
 		gSimBottomList.clear();
 		issueN3DSTextureReadAhead();
