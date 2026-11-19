@@ -391,6 +391,8 @@ namespace prism {
 		*oOwnPalettes = gOwnPalettes.size();
 	}
 
+	static void leaveAtlasPage(Texture tTexture, int tIsPageKept);
+
 	void forgetN3DSTexture(N3DSTextureData* tTexture) {
 		if (tTexture->mStream && gReadAheadCandidate == tTexture->mStream) gReadAheadCandidate = NULL;
 		if (gAllStreamed.erase(tTexture) && gAllStreamed.empty() && gAllStreamed.bucket_count() > 16) {
@@ -399,6 +401,7 @@ namespace prism {
 		if (tTexture->mStream && tTexture->mIndexed && !tTexture->mIsPinned) letStreamedPixelsGo(tTexture);
 		if (gStreamedInUse == tTexture) gStreamedInUse = NULL;
 		gResidentTextures.erase(tTexture);
+		if (tTexture->mAtlasPage >= 0) leaveAtlasPage(tTexture, 0);   // its texels were the page's
 		if (tTexture->mOwnPalette >= 0 && tTexture->mOwnPalette < (int)gOwnPalettes.size()) {
 			const int index = tTexture->mOwnPalette;
 			// A palette no longer used leaves the index at once.
@@ -535,6 +538,134 @@ namespace prism {
 	// later, the others go first.
 	static const unsigned int STREAMED_EVICTION_GRACE = 180;
 
+	// [3DS] Small paletted textures share 512x512 pages (an atlas): each in
+	// a place of its size rounded up to 8 (the GPU's tiles) with a texel
+	// more each way, left clear (no neighbour's texels drawn at its sides),
+	// not in a texture of its own rounded up to a power of two. The MvC2
+	// Circus Carnival's 1520 sprites (42 MB at the size drawn) took over 80
+	// MB that way, its textures made and let go 170 times a second; and the
+	// pieces drawn one after another from one page go in one batch. A page
+	// is let go whole (the one drawn longest ago); a texture let go leaves
+	// its place unused until its page is.
+	static const int ATLAS_PAGE_SIZE = 512;
+	static const int ATLAS_MAXIMUM_PLACE = 256;
+	static const size_t ATLAS_PAGE_BYTES = size_t(ATLAS_PAGE_SIZE) * ATLAS_PAGE_SIZE * 2;
+
+	typedef struct {
+		int mY;
+		int mHeight;
+		int mX;   // where its next place starts
+	} AtlasShelf;
+
+	typedef struct {
+		C3D_Tex mTex;
+		int mIsUsed;
+		std::vector<AtlasShelf> mShelves;
+		int mNextShelfY;
+		std::vector<Texture> mTextures;
+	} AtlasPage;
+
+	static std::vector<AtlasPage> gAtlasPages;
+
+	static int roundUpTo8(int tSize) {
+		return (tSize + 7) & ~7;
+	}
+
+	// A place of tWidth x tHeight (multiples of 8) on a shelf of about its
+	// height, or a new shelf; 0 if the page has no room.
+	static int findAtlasPlace(AtlasPage& tPage, int tWidth, int tHeight, int* oX, int* oY) {
+		for (auto& shelf : tPage.mShelves) {
+			if (shelf.mHeight < tHeight || shelf.mHeight > tHeight * 2 || shelf.mX + tWidth > ATLAS_PAGE_SIZE) continue;
+			*oX = shelf.mX;
+			*oY = shelf.mY;
+			shelf.mX += tWidth;
+			return 1;
+		}
+		if (tPage.mNextShelfY + tHeight > ATLAS_PAGE_SIZE) return 0;
+		tPage.mShelves.push_back(AtlasShelf{ tPage.mNextShelfY, tHeight, tWidth });
+		*oX = 0;
+		*oY = tPage.mNextShelfY;
+		tPage.mNextShelfY += tHeight;
+		return 1;
+	}
+
+	static void deleteAtlasPage(int tPage) {
+		AtlasPage& page = gAtlasPages[tPage];
+		C3D_TexDelete(&page.mTex);
+		page.mIsUsed = 0;
+		page.mShelves.clear();
+		page.mNextShelfY = 0;
+		std::vector<Texture>().swap(page.mTextures);
+		while (!gAtlasPages.empty() && !gAtlasPages.back().mIsUsed) gAtlasPages.pop_back();
+		if (gAtlasPages.empty()) std::vector<AtlasPage>().swap(gAtlasPages);
+	}
+
+	// A texture leaving its page (let go, or its page let go); its page let
+	// go with its last one.
+	static void leaveAtlasPage(Texture tTexture, int tIsPageKept) {
+		const int index = tTexture->mAtlasPage;
+		tTexture->mAtlasPage = -1;
+		tTexture->mIsInitialized = 0;
+		if (index < 0 || index >= (int)gAtlasPages.size() || tIsPageKept) return;
+		auto& textures = gAtlasPages[index].mTextures;
+		textures.erase(std::remove(textures.begin(), textures.end(), tTexture), textures.end());
+		if (textures.empty()) deleteAtlasPage(index);
+	}
+
+	static int makeAtlasPage() {
+		int index = -1;
+		for (int i = 0; i < (int)gAtlasPages.size(); i++) {
+			if (!gAtlasPages[i].mIsUsed) { index = i; break; }
+		}
+		if (index < 0) {
+			gAtlasPages.push_back(AtlasPage());
+			index = (int)gAtlasPages.size() - 1;
+		}
+		AtlasPage& page = gAtlasPages[index];
+		if (!C3D_TexInit(&page.mTex, ATLAS_PAGE_SIZE, ATLAS_PAGE_SIZE, GPU_RGBA5551)) {
+			while (!gAtlasPages.empty() && !gAtlasPages.back().mIsUsed) gAtlasPages.pop_back();
+			return -1;
+		}
+		C3D_TexSetFilter(&page.mTex, GPU_NEAREST, GPU_NEAREST);
+		C3D_TexSetWrap(&page.mTex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+		memset(page.mTex.data, 0, page.mTex.size);
+		C3D_TexFlush(&page.mTex);
+		page.mIsUsed = 1;
+		page.mShelves.clear();
+		page.mNextShelfY = 0;
+		page.mTextures.clear();
+		return index;
+	}
+
+	// The page drawn longest ago (its textures' latest), not in this frame
+	// or the one before; -1 if none.
+	static int findOldestAtlasPage(unsigned int* oFrame) {
+		int oldest = -1;
+		for (int i = 0; i < (int)gAtlasPages.size(); i++) {
+			const AtlasPage& page = gAtlasPages[i];
+			if (!page.mIsUsed) continue;
+			unsigned int latest = 0;
+			for (const auto texture : page.mTextures) {
+				const int isCostly = texture->mStream && !texture->mIndexed;
+				latest = std::max(latest, texture->mLastUsedFrame + (isCostly ? STREAMED_EVICTION_GRACE : 0));
+			}
+			if (latest + 1 >= gN3DSTextureFrame) continue;
+			if (oldest < 0 || latest < *oFrame) {
+				oldest = i;
+				*oFrame = latest;
+			}
+		}
+		return oldest;
+	}
+
+	static void evictAtlasPage(int tPage) {
+		for (const auto texture : gAtlasPages[tPage].mTextures) {
+			leaveAtlasPage(texture, 1);
+			gN3DSPerf.mEvictedTextures++;
+		}
+		deleteAtlasPage(tPage);
+	}
+
 	static int evictOldestTexture() {
 		Texture oldest = NULL;
 		unsigned int oldestFrame = 0;
@@ -546,6 +677,12 @@ namespace prism {
 				oldest = texture;
 				oldestFrame = frame;
 			}
+		}
+		unsigned int pageFrame = 0;
+		const int page = findOldestAtlasPage(&pageFrame);
+		if (page >= 0 && (!oldest || pageFrame < oldestFrame)) {
+			evictAtlasPage(page);
+			return 1;
 		}
 		if (!oldest) return 0;
 		C3D_TexDelete(&oldest->mTex);
@@ -568,7 +705,33 @@ namespace prism {
 	static size_t getN3DSTextureLoadReserve() { return LOAD_RESERVE; }
 	static const size_t DRAW_RESERVE = 3 * 1024 * 1024;
 
+	// A small one's place in a page: in the newest pages first, else a new
+	// page (with the memory for it), else room made (when drawn).
+	static int makeAtlasTexels(Texture tTexture, int tPlaceWidth, int tPlaceHeight, int tIsEvicting) {
+		for (;;) {
+			for (int i = (int)gAtlasPages.size() - 1; i >= 0; i--) {
+				AtlasPage& page = gAtlasPages[i];
+				int x, y;
+				if (!page.mIsUsed || !findAtlasPlace(page, tPlaceWidth, tPlaceHeight, &x, &y)) continue;
+				tTexture->mTex = page.mTex;
+				tTexture->mAtlasPage = i;
+				tTexture->mAtlasX = x;
+				tTexture->mAtlasY = y;
+				tTexture->mIsInitialized = 1;
+				tTexture->mPaletteVersion = -1;
+				page.mTextures.push_back(tTexture);
+				return 1;
+			}
+			const size_t needed = ATLAS_PAGE_BYTES + (tIsEvicting ? DRAW_RESERVE : LOAD_RESERVE);
+			if (linearSpaceFree() >= needed && makeAtlasPage() >= 0) continue;
+			if (!tIsEvicting || !evictOldestTexture()) return 0;
+		}
+	}
+
 	static int makePalettedTexels(Texture tTexture, int tWidth, int tHeight, int tIsEvicting) {
+		const int placeWidth = roundUpTo8(tWidth + 1), placeHeight = roundUpTo8(tHeight + 1);
+		if (placeWidth <= ATLAS_MAXIMUM_PLACE && placeHeight <= ATLAS_MAXIMUM_PLACE) return makeAtlasTexels(tTexture, placeWidth, placeHeight, tIsEvicting);
+
 		const int width = powerOfTwoAtLeast(tWidth), height = powerOfTwoAtLeast(tHeight);
 		const size_t needed = (size_t)width * height * 2 + (tIsEvicting ? DRAW_RESERVE : LOAD_RESERVE);
 		while (linearSpaceFree() < needed || !C3D_TexInit(&tTexture->mTex, width, height, GPU_RGBA5551)) {
@@ -576,6 +739,7 @@ namespace prism {
 		}
 		tTexture->mIsInitialized = 1;
 		tTexture->mPaletteVersion = -1;
+		tTexture->mAtlasPage = -1;
 		C3D_TexSetFilter(&tTexture->mTex, GPU_NEAREST, GPU_NEAREST);
 		C3D_TexSetWrap(&tTexture->mTex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
 		memset(tTexture->mTex.data, 0, tTexture->mTex.size);
@@ -720,11 +884,14 @@ namespace prism {
 		getN3DSTexturePalette(tTexture, palette);
 		const int w = clampedWidth(tTexture.mTextureSize.x), h = clampedWidth(tTexture.mTextureSize.y);
 		const int fullBlocks = w >> 3;
+		// In a page: at its place (x a multiple of 8, a tile's start).
+		const int isInAtlas = texture->mAtlasPage >= 0;
+		const int placeX = isInAtlas ? texture->mAtlasX : 0, placeY = isInAtlas ? texture->mAtlasY : 0;
 
 		for (int y = 0; y < h; y++) {
-			const TexelRow row = texelRow(y, tex);
+			const TexelRow row = texelRow(placeY + y, tex);
 			const unsigned char* line = tIndices + y * tTexture.mTextureSize.x;
-			u16* block = dst + row.mBase;
+			u16* block = dst + row.mBase + ((placeX >> 3) << 6);
 			const u8* order = row.mOrder;
 			for (int b = 0; b < fullBlocks; b++, block += 64, line += 8) {
 				block[order[0]] = palette[line[0]];
@@ -741,7 +908,18 @@ namespace prism {
 			}
 		}
 
-		C3D_TexFlush(tex);
+		if (isInAtlas) {
+			// Only its rows of tiles (the page's whole width each), not the
+			// whole page's 512 KB.
+			const int firstBand = (tex->height - placeY - h) >> 3, lastBand = (tex->height - 1 - placeY) >> 3;
+			const size_t bandBytes = size_t(tex->width >> 3) * 64 * sizeof(u16);
+#ifdef __3DS__
+			GSPGPU_FlushDataCache((u8*)tex->data + firstBand * bandBytes, (lastBand - firstBand + 1) * bandBytes);
+#else
+			(void)firstBand; (void)lastBand; (void)bandBytes;
+#endif
+		}
+		else C3D_TexFlush(tex);
 		texture->mPaletteVersion = getPaletteVersion(tTexture);
 	}
 

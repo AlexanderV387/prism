@@ -44,6 +44,11 @@ typedef struct {
 	int mPaletteVersion;
 	unsigned int mLastUsedFrame;
 	N3DSTextureStream* mStream;   // streamed: its pixels read when drawn (mIndexed let go when room runs short)
+	// In a page shared with other small ones (texture_3ds.cpp's atlas): its
+	// index (mTex a copy of the page's), and where in it; -1 its own.
+	int mAtlasPage;
+	int mAtlasX;
+	int mAtlasY;
 } N3DSTextureData;
 
 typedef N3DSTextureData* Texture;

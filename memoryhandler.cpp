@@ -86,6 +86,8 @@ namespace prism {
 		data->mPaletteVersion = -1;
 		data->mLastUsedFrame = 0;
 		data->mStream = NULL;
+		data->mAtlasPage = -1;
+		data->mAtlasX = data->mAtlasY = 0;
 		return data;
 	}
 

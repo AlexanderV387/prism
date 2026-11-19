@@ -490,7 +490,9 @@ namespace prism {
 	} DrawState;
 
 	static bool isSameDrawState(const DrawState& a, const DrawState& b) {
-		return a.mTex == b.mTex && a.mBlendType == b.mBlendType && a.mIsColorSolid == b.mIsColorSolid
+		// The texels' memory, not the struct: the textures in one atlas page
+		// (texture_3ds.cpp) each hold a copy of the page's.
+		return a.mTex->data == b.mTex->data && a.mBlendType == b.mBlendType && a.mIsColorSolid == b.mIsColorSolid
 			&& a.mIsColorInversed == b.mIsColorInversed && a.mColorOffset == b.mColorOffset && a.mColorOffsetNegative == b.mColorOffsetNegative && a.mDestAlpha == b.mDestAlpha;
 	}
 
@@ -615,23 +617,26 @@ namespace prism {
 		// The texture's part, in its texels (a reversed rectangle mirrors).
 		const float texWidth = (float)texture->mTex.width;
 		const float texHeight = (float)texture->mTex.height;
+		// In an atlas page: from its place in it.
+		const float placeX = texture->mAtlasPage >= 0 ? (float)texture->mAtlasX : 0.0f;
+		const float placeY = texture->mAtlasPage >= 0 ? (float)texture->mAtlasY : 0.0f;
 		const PrismRectangle& r = e.mTexturePosition;
 		float u1, u2, v1, v2;
 		if (r.topLeft.x < r.bottomRight.x) {
-			u1 = r.topLeft.x / texWidth;
-			u2 = (r.bottomRight.x + 1) / texWidth;
+			u1 = (placeX + r.topLeft.x) / texWidth;
+			u2 = (placeX + r.bottomRight.x + 1) / texWidth;
 		}
 		else {
-			u1 = (r.topLeft.x + 1) / texWidth;
-			u2 = r.bottomRight.x / texWidth;
+			u1 = (placeX + r.topLeft.x + 1) / texWidth;
+			u2 = (placeX + r.bottomRight.x) / texWidth;
 		}
 		if (r.topLeft.y < r.bottomRight.y) {
-			v1 = r.topLeft.y / texHeight;
-			v2 = (r.bottomRight.y + 1) / texHeight;
+			v1 = (placeY + r.topLeft.y) / texHeight;
+			v2 = (placeY + r.bottomRight.y + 1) / texHeight;
 		}
 		else {
-			v1 = (r.topLeft.y + 1) / texHeight;
-			v2 = r.bottomRight.y / texHeight;
+			v1 = (placeY + r.topLeft.y + 1) / texHeight;
+			v2 = (placeY + r.bottomRight.y) / texHeight;
 		}
 
 		gFrameSprites++;

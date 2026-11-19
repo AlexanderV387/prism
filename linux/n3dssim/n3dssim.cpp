@@ -282,12 +282,15 @@ namespace prism {
 		getN3DSTexturePalette(tTexture, colors);
 		const u16* texels = (const u16*)texture->mTex.data;
 		int bad = 0;
+		// In an atlas page: at its place.
+		const int placeX = texture->mAtlasPage >= 0 ? texture->mAtlasX : 0, placeY = texture->mAtlasPage >= 0 ? texture->mAtlasY : 0;
 		for (int y = 0; y < h && y < 1024 && !bad; y++) {
-			const int flipped = texture->mTex.height - 1 - y;
+			const int flipped = texture->mTex.height - 1 - (placeY + y);
 			const u32 base = (flipped >> 3) * (texture->mTex.width >> 3) * 64;
 			for (int x = 0; x < w && x < 1024; x++) {
 				const u16 expected = colors[indices[y * w + x]];
-				if (texels[base + ((x >> 3) << 6) + order[(flipped & 7) * 8 + (x & 7)]] != expected) { bad = 1; break; }
+				const int px = placeX + x;
+				if (texels[base + ((px >> 3) << 6) + order[(flipped & 7) * 8 + (px & 7)]] != expected) { bad = 1; break; }
 			}
 		}
 		free(indices);
@@ -400,6 +403,18 @@ namespace prism {
 	void drawSprite(const TextureData& tTexture, const Position& tPos, const PrismRectangle& tTexturePosition) {
 		const auto sizeX = abs(tTexturePosition.bottomRight.x - tTexturePosition.topLeft.x) + 1;
 		const auto sizeY = abs(tTexturePosition.bottomRight.y - tTexturePosition.topLeft.y) + 1;
+		// As drawing_3ds.cpp's drawSprite: one wholly off the top screen is
+		// left out before its texture is made (counted as drawn, a texture
+		// made for each sprite off the screen too).
+		if (!gDrawingScreen) {
+			const Position corners[4] = { tPos, Vector3D(tPos.x + sizeX, tPos.y, tPos.z), Vector3D(tPos.x, tPos.y + sizeY, tPos.z), Vector3D(tPos.x + sizeX, tPos.y + sizeY, tPos.z) };
+			double minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+			for (const auto& c : corners) {
+				const Position p = rotateScaleTranslatePositionByMatrix4D(gDraw.mMatrix, c);
+				minX = fmin(minX, p.x); maxX = fmax(maxX, p.x); minY = fmin(minY, p.y); maxY = fmax(maxY, p.y);
+			}
+			if (maxX < 0 || minX > SHOT_W || maxY < 0 || minY > SHOT_H) return;
+		}
 		drawSpriteNoRectangle(tTexture, tPos, Vector3D(tPos.x + sizeX, tPos.y, tPos.z), Vector3D(tPos.x, tPos.y + sizeY, tPos.z), Vector3D(tPos.x + sizeX, tPos.y + sizeY, tPos.z), tTexturePosition);
 	}
 	void drawMultilineText(const char*, const char*, const Position&, const Vector3D&, Color, const Vector3D&, const Vector3D&) {}
@@ -564,8 +579,9 @@ namespace prism {
 			const float tw = t.width, th = t.height;
 			const PrismRectangle& r = e.mTexturePosition;
 			float u1, u2, v1, v2;
-			if (r.topLeft.x < r.bottomRight.x) { u1 = r.topLeft.x / tw; u2 = (r.bottomRight.x + 1) / tw; } else { u1 = (r.topLeft.x + 1) / tw; u2 = r.bottomRight.x / tw; }
-			if (r.topLeft.y < r.bottomRight.y) { v1 = r.topLeft.y / th; v2 = (r.bottomRight.y + 1) / th; } else { v1 = (r.topLeft.y + 1) / th; v2 = r.bottomRight.y / th; }
+			const float ox = texture->mAtlasPage >= 0 ? (float)texture->mAtlasX : 0.0f, oy = texture->mAtlasPage >= 0 ? (float)texture->mAtlasY : 0.0f;
+			if (r.topLeft.x < r.bottomRight.x) { u1 = (ox + r.topLeft.x) / tw; u2 = (ox + r.bottomRight.x + 1) / tw; } else { u1 = (ox + r.topLeft.x + 1) / tw; u2 = (ox + r.bottomRight.x) / tw; }
+			if (r.topLeft.y < r.bottomRight.y) { v1 = (oy + r.topLeft.y) / th; v2 = (oy + r.bottomRight.y + 1) / th; } else { v1 = (oy + r.topLeft.y + 1) / th; v2 = (oy + r.bottomRight.y) / th; }
 			Position p[4];
 			const Position2D corners[4] = { e.mTopLeft, e.mBottomLeft, e.mTopRight, e.mBottomRight };
 			for (int i = 0; i < 4; i++) { p[i] = rotateScaleTranslatePositionByMatrix4D(e.mData.mMatrix, corners[i].xyz(0)); p[i].x = floorf(p[i].x); p[i].y = floorf(p[i].y); }
