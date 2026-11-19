@@ -168,7 +168,14 @@ namespace prism {
 		(void)tCaller;
 		Actor* e = (Actor*)tData;
 
-		if (e->mBP.mDraw) e->mBP.mDraw(e->mData);
+		if (!e->mBP.mDraw) return;
+#ifdef __3DS__
+		const uint64_t start = getN3DSLogicPartTicks();
+		e->mBP.mDraw(e->mData);
+		addN3DSDrawPartTicksForAddress((const void*)e->mBP.mDraw, getN3DSLogicPartTicks() - start);
+#else
+		e->mBP.mDraw(e->mData);
+#endif
 	}
 
 	void drawActorHandler()

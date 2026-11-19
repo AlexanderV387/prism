@@ -5,6 +5,8 @@
 #include <string.h>
 #include <math.h>
 #include <set>
+#include <vector>
+#include <cmath>
 #include <algorithm>
 
 #include "prism/log.h"
@@ -17,6 +19,7 @@
 #include "prism3ds.h"
 #include "prism3ds_shbin.h"
 #include "prism3dsperf.h"
+#include "prism/n3dsperf.h"
 
 // [3DS] Drawing with citro3d, on the top screen. As on the Vita, sprites are
 // kept with their state and drawn sorted by z when the frame ends; the
@@ -127,8 +130,51 @@ namespace prism {
 	} gBookkeepingData;
 
 	// Sorted by z; sprites of the same z in the order drawn.
-	static std::multiset<DrawListSpriteElement> gDrawList;
-	static std::multiset<DrawListSpriteElement> gBottomDrawList;
+	// The frame's sprites, in the order given, drawn by their z (the same
+	// z in the order given). A list kept from frame to frame, sorted once:
+	// a set made a node for each (800 in a frame in the MvC2 Circus
+	// Carnival).
+	struct DrawList {
+		std::vector<DrawListSpriteElement> mElements;
+		std::vector<int> mOrder;
+
+		void insert(const DrawListSpriteElement& e) { mElements.push_back(e); }
+		bool empty() const { return mElements.empty(); }
+		void clear() { mElements.clear(); }
+		void sort() {
+			mOrder.resize(mElements.size());
+			for (int i = 0; i < (int)mOrder.size(); i++) mOrder[i] = i;
+			const auto& elements = mElements;
+			std::stable_sort(mOrder.begin(), mOrder.end(), [&elements](int a, int b) { return elements[a].mZ < elements[b].mZ; });
+		}
+	};
+	static DrawList gDrawList;
+	static DrawList gBottomDrawList;
+
+	// [3DS] The transformation times a translation, a scale or a turn, as
+	// matMult4D with their matrices would make it (the same sums in the same
+	// order: the same floats), without the 64 multiplications a product:
+	// a sprite took 8 to 10 of them, the most of its drawing on the ARM11.
+	static void translateMatrix(Matrix4D& m, float x, float y, float z) {
+		for (int i = 0; i < 4; i++) m.m[3][i] = m.m[0][i] * x + m.m[1][i] * y + m.m[2][i] * z + m.m[3][i];
+	}
+
+	static void scaleMatrix(Matrix4D& m, float x, float y, float z) {
+		for (int i = 0; i < 4; i++) {
+			m.m[0][i] = m.m[0][i] * x;
+			m.m[1][i] = m.m[1][i] * y;
+			m.m[2][i] = m.m[2][i] * z;
+		}
+	}
+
+	static void turnMatrixZ(Matrix4D& m, float tAngle) {
+		const float c = std::cos(tAngle), s = std::sin(tAngle);
+		for (int i = 0; i < 4; i++) {
+			const float a = m.m[0][i], b = m.m[1][i];
+			m.m[0][i] = a * c + b * s;
+			m.m[1][i] = a * -s + b * c;
+		}
+	}
 	static DrawingData gDrawingData;
 
 	// ==========================================================================
@@ -158,6 +204,14 @@ namespace prism {
 
 	static void updateScreenTransform() {
 		const ScreenSize sz = getScreenSize();
+		// Made again only when what it is made from changes (it was made
+		// for each sprite).
+		static int madeFor[4] = { -1, -1, -1, -1 };
+		if (madeFor[0] == sz.x && madeFor[1] == sz.y && madeFor[2] == TOP_WIDTH && madeFor[3] == gIsStretched) return;
+		madeFor[0] = sz.x;
+		madeFor[1] = sz.y;
+		madeFor[2] = TOP_WIDTH;
+		madeFor[3] = gIsStretched;
 		const float scale = fminf(400 / (float)sz.x, TOP_HEIGHT / (float)sz.y);
 		float scaleX = scale * TOP_WIDTH / 400;
 		if (gIsStretched) scaleX = TOP_WIDTH / (float)sz.x;
@@ -591,10 +645,15 @@ namespace prism {
 		gBatchStart = gN3DSDrawingData.mVertexAmount;
 	}
 
+	// This frame's time in prepareN3DSTexture (made, filled), for the load log.
+	static uint64_t gFrameTextureTicks;
+
 	static void drawSortedSprite(const DrawListSpriteElement& e, DrawState* tCurrentState, int* tHasState) {
 		if (gN3DSDrawingData.mVertexAmount + 6 > MAXIMUM_VERTEX_AMOUNT) return;
 
+		const uint64_t textureStart = getN3DSPerfTicks();
 		prepareN3DSTexture(e.mTexture);
+		gFrameTextureTicks += getN3DSPerfTicks() - textureStart;
 		Texture texture = (Texture)e.mTexture.mTexture->mData;
 		if (!texture->mIsInitialized) return;   // left out for want of memory
 
@@ -703,8 +762,9 @@ namespace prism {
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, gN3DSDrawingData.mProjectionLocation, &gN3DSDrawingData.mBottomProjection);
 		DrawState state;
 		int hasState = 0;
-		for (const auto& e : gBottomDrawList) {
-			drawSortedSprite(e, &state, &hasState);
+		gBottomDrawList.sort();
+		for (const int i : gBottomDrawList.mOrder) {
+			drawSortedSprite(gBottomDrawList.mElements[i], &state, &hasState);
 		}
 		flushBatch();
 		gBottomDrawList.clear();
@@ -717,10 +777,18 @@ namespace prism {
 		DrawState state;
 		int hasState = 0;
 		drawBackgroundColor();
-		for (const auto& e : gDrawList) {
-			drawSortedSprite(e, &state, &hasState);
+		const uint64_t sortStart = getN3DSPerfTicks();
+		gDrawList.sort();
+		const uint64_t sortEnd = getN3DSPerfTicks();
+		gFrameTextureTicks = 0;
+		for (const int i : gDrawList.mOrder) {
+			drawSortedSprite(gDrawList.mElements[i], &state, &hasState);
 		}
 		flushBatch();
+		const uint64_t verticesEnd = getN3DSPerfTicks();
+		addN3DSDrawPartTicks("sorting", sortEnd - sortStart);
+		addN3DSDrawPartTicks("textures", gFrameTextureTicks);
+		addN3DSDrawPartTicks("vertices", verticesEnd - sortEnd - gFrameTextureTicks);
 		gDrawList.clear();
 		drawBottomScreen();
 		issueN3DSTextureReadAhead();
@@ -840,9 +908,11 @@ namespace prism {
 
 	void scaleDrawing3D(const Vector3D& tFactor, const Position& tScalePosition) {
 		const auto scalePosition2D = Vector3D(tScalePosition.x, tScalePosition.y, 0);
-		gDrawingData.mTransformationMatrix = matMult4D(gDrawingData.mTransformationMatrix, createTranslationMatrix4D(scalePosition2D));
-		gDrawingData.mTransformationMatrix = matMult4D(gDrawingData.mTransformationMatrix, createScaleMatrix4D(Vector3D(tFactor.x, tFactor.y, tFactor.z)));
-		gDrawingData.mTransformationMatrix = matMult4D(gDrawingData.mTransformationMatrix, createTranslationMatrix4D(vecScale(scalePosition2D, -1)));
+		const auto minusPosition = vecScale(scalePosition2D, -1);
+		Matrix4D& m = gDrawingData.mTransformationMatrix;
+		translateMatrix(m, scalePosition2D.x, scalePosition2D.y, scalePosition2D.z);
+		scaleMatrix(m, tFactor.x, tFactor.y, tFactor.z);
+		translateMatrix(m, minusPosition.x, minusPosition.y, minusPosition.z);
 	}
 
 	void setDrawingBaseColorOffsetAdvanced(float r, float g, float b) {
@@ -874,9 +944,11 @@ namespace prism {
 	void setDrawingRotationZ(float tAngle, const Position& tPosition) {
 		tAngle = (2 * M_PI - tAngle);
 		const auto rotationPosition2D = Vector3D(tPosition.x, tPosition.y, 0);
-		gDrawingData.mTransformationMatrix = matMult4D(gDrawingData.mTransformationMatrix, createTranslationMatrix4D(rotationPosition2D));
-		gDrawingData.mTransformationMatrix = matMult4D(gDrawingData.mTransformationMatrix, createRotationZMatrix4D(tAngle));
-		gDrawingData.mTransformationMatrix = matMult4D(gDrawingData.mTransformationMatrix, createTranslationMatrix4D(vecScale(rotationPosition2D, -1)));
+		const auto minusPosition = vecScale(rotationPosition2D, -1);
+		Matrix4D& m = gDrawingData.mTransformationMatrix;
+		translateMatrix(m, rotationPosition2D.x, rotationPosition2D.y, rotationPosition2D.z);
+		turnMatrixZ(m, tAngle);
+		translateMatrix(m, minusPosition.x, minusPosition.y, minusPosition.z);
 	}
 
 	void setDrawingParametersToIdentity() {
@@ -891,9 +963,10 @@ namespace prism {
 
 		// The game's screen onto the top screen.
 		updateScreenTransform();
-		gDrawingData.mTransformationMatrix = makeIdentityMatrix4D();
-		gDrawingData.mTransformationMatrix = matMult4D(gDrawingData.mTransformationMatrix, createTranslationMatrix4D(gN3DSDrawingData.mScreenOffset));
-		gDrawingData.mTransformationMatrix = matMult4D(gDrawingData.mTransformationMatrix, createScaleMatrix4D(gN3DSDrawingData.mScreenScale));
+		Matrix4D& m = gDrawingData.mTransformationMatrix;
+		m = makeIdentityMatrix4D();
+		translateMatrix(m, gN3DSDrawingData.mScreenOffset.x, gN3DSDrawingData.mScreenOffset.y, gN3DSDrawingData.mScreenOffset.z);
+		scaleMatrix(m, gN3DSDrawingData.mScreenScale.x, gN3DSDrawingData.mScreenScale.y, gN3DSDrawingData.mScreenScale.z);
 	}
 
 	void setDrawingBlendType(BlendType tBlendType) { gDrawingData.mBlendType = tBlendType; }
@@ -908,7 +981,7 @@ namespace prism {
 	} TranslationEffect;
 
 	void pushDrawingTranslation(const Vector3D& tTranslation) {
-		gDrawingData.mTransformationMatrix = matMult4D(gDrawingData.mTransformationMatrix, createTranslationMatrix4D(tTranslation));
+		translateMatrix(gDrawingData.mTransformationMatrix, tTranslation.x, tTranslation.y, tTranslation.z);
 
 		TranslationEffect* e = (TranslationEffect*)allocMemory(sizeof(TranslationEffect));
 		e->mTranslation = tTranslation;
@@ -934,7 +1007,8 @@ namespace prism {
 	void popDrawingTranslation() {
 		int ind = vector_size(&gDrawingData.mEffectStack) - 1;
 		TranslationEffect* e = (TranslationEffect*)vector_get(&gDrawingData.mEffectStack, ind);
-		gDrawingData.mTransformationMatrix = matMult4D(gDrawingData.mTransformationMatrix, createTranslationMatrix4D(vecScale(e->mTranslation, -1)));
+		const auto minusTranslation = vecScale(e->mTranslation, -1);
+		translateMatrix(gDrawingData.mTransformationMatrix, minusTranslation.x, minusTranslation.y, minusTranslation.z);
 		vector_remove(&gDrawingData.mEffectStack, ind);
 	}
 

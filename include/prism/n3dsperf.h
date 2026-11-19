@@ -12,6 +12,9 @@ namespace prism {
 	uint64_t getN3DSLogicPartTicks();
 	void addN3DSLogicPartTicks(const char* tName, uint64_t tTicks);
 	void addN3DSLogicPartTicksForAddress(const void* tAddress, uint64_t tTicks);
+	// The same for a drawn frame's drawing ("drawing parts").
+	void addN3DSDrawPartTicks(const char* tName, uint64_t tTicks);
+	void addN3DSDrawPartTicksForAddress(const void* tAddress, uint64_t tTicks);
 #endif
 
 }

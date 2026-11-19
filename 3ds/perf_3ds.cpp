@@ -439,44 +439,57 @@ namespace prism {
 		uint64_t mTicks;
 	} LogicPart;
 	static const int LOGIC_PART_AMOUNT = 48;
-	static LogicPart gLogicParts[LOGIC_PART_AMOUNT];
-	static int gLogicPartAmount;
+	typedef struct {
+		LogicPart mParts[LOGIC_PART_AMOUNT];
+		int mAmount;
+	} PartList;
+	// The game logic's, and the drawing's (each actor's drawing, then the
+	// sprites sorted, made into vertices and their textures made).
+	static PartList gLogicParts, gDrawParts;
 
 	uint64_t getN3DSLogicPartTicks() { return svcGetSystemTick(); }
 
-	static void addLogicPart(const char* tName, const void* tAddress, uint64_t tTicks) {
-		for (int i = 0; i < gLogicPartAmount; i++) {
-			if (gLogicParts[i].mName == tName && gLogicParts[i].mAddress == tAddress) {
-				gLogicParts[i].mTicks += tTicks;
+	static void addPart(PartList* tList, const char* tName, const void* tAddress, uint64_t tTicks) {
+		for (int i = 0; i < tList->mAmount; i++) {
+			if (tList->mParts[i].mName == tName && tList->mParts[i].mAddress == tAddress) {
+				tList->mParts[i].mTicks += tTicks;
 				return;
 			}
 		}
-		if (gLogicPartAmount >= LOGIC_PART_AMOUNT) return;
-		gLogicParts[gLogicPartAmount].mName = tName;
-		gLogicParts[gLogicPartAmount].mAddress = tAddress;
-		gLogicParts[gLogicPartAmount].mTicks = tTicks;
-		gLogicPartAmount++;
+		if (tList->mAmount >= LOGIC_PART_AMOUNT) return;
+		tList->mParts[tList->mAmount].mName = tName;
+		tList->mParts[tList->mAmount].mAddress = tAddress;
+		tList->mParts[tList->mAmount].mTicks = tTicks;
+		tList->mAmount++;
 	}
 
-	static void resetLogicParts() { gLogicPartAmount = 0; }
+	static void resetLogicParts() {
+		gLogicParts.mAmount = 0;
+		gDrawParts.mAmount = 0;
+	}
 
-	void addN3DSLogicPartTicks(const char* tName, uint64_t tTicks) { addLogicPart(tName, NULL, tTicks); }
-	void addN3DSLogicPartTicksForAddress(const void* tAddress, uint64_t tTicks) { addLogicPart(NULL, tAddress, tTicks); }
+	void addN3DSLogicPartTicks(const char* tName, uint64_t tTicks) { addPart(&gLogicParts, tName, NULL, tTicks); }
+	void addN3DSLogicPartTicksForAddress(const void* tAddress, uint64_t tTicks) { addPart(&gLogicParts, NULL, tAddress, tTicks); }
+	void addN3DSDrawPartTicks(const char* tName, uint64_t tTicks) { addPart(&gDrawParts, tName, NULL, tTicks); }
+	void addN3DSDrawPartTicksForAddress(const void* tAddress, uint64_t tTicks) { addPart(&gDrawParts, NULL, tAddress, tTicks); }
 
 	// The parts taking the most, a frame's milliseconds each; emptied.
-	static void describeLogicParts(uint32_t tFrames, char* oText, size_t tSize) {
+	static void describeParts(PartList* tList, const char* tTitle, uint32_t tFrames, char* oText, size_t tSize) {
 		*oText = '\0';
-		if (!gLogicPartAmount || !tFrames) return;
-		std::sort(gLogicParts, gLogicParts + gLogicPartAmount, [](const LogicPart& a, const LogicPart& b) { return a.mTicks > b.mTicks; });
-		size_t used = 0;
-		used += snprintf(oText + used, tSize - used, " | logic parts:");
-		for (int i = 0; i < gLogicPartAmount && i < 8 && used < tSize; i++) {
-			const double ms = getN3DSPerfMilliseconds(gLogicParts[i].mTicks) / tFrames;
-			if (ms < 0.05) break;
-			if (gLogicParts[i].mName) used += snprintf(oText + used, tSize - used, " %s %.1f ms,", gLogicParts[i].mName, ms);
-			else used += snprintf(oText + used, tSize - used, " %p %.1f ms,", gLogicParts[i].mAddress, ms);
+		if (!tList->mAmount || !tFrames) {
+			tList->mAmount = 0;
+			return;
 		}
-		gLogicPartAmount = 0;
+		std::sort(tList->mParts, tList->mParts + tList->mAmount, [](const LogicPart& a, const LogicPart& b) { return a.mTicks > b.mTicks; });
+		size_t used = 0;
+		used += snprintf(oText + used, tSize - used, " | %s:", tTitle);
+		for (int i = 0; i < tList->mAmount && i < 8 && used < tSize; i++) {
+			const double ms = getN3DSPerfMilliseconds(tList->mParts[i].mTicks) / tFrames;
+			if (ms < 0.05) break;
+			if (tList->mParts[i].mName) used += snprintf(oText + used, tSize - used, " %s %.1f ms,", tList->mParts[i].mName, ms);
+			else used += snprintf(oText + used, tSize - used, " %p %.1f ms,", tList->mParts[i].mAddress, ms);
+		}
+		tList->mAmount = 0;
 	}
 
 	// Every 10 seconds of a screen (600 frames), how its frames went: what
@@ -488,8 +501,11 @@ namespace prism {
 		char parts[300];
 		describeFrameParts(gPerf.mInterval, parts, sizeof(parts));
 		const auto info = mallinfo();
-		char logicParts[600];
-		describeLogicParts(gPerf.mInterval.mUpdates, logicParts, sizeof(logicParts));
+		char logicParts[1200];
+		describeParts(&gLogicParts, "logic parts", gPerf.mInterval.mUpdates, logicParts, sizeof(logicParts));
+		// The drawing's, a drawn frame's milliseconds.
+		const size_t logicLength = strlen(logicParts);
+		describeParts(&gDrawParts, "drawing parts", gPerf.mInterval.mFrames, logicParts + logicLength, sizeof(logicParts) - logicLength);
 		addN3DSPerfLine("  at %d s: %s | %d animations | heap %d KB used, linear memory %d KB free, %u textures made while shown, %u let go, %u made again for a palette (%.0f ms), %u streamed sprites read (%.0f ms), %u let go%s",
 			gPerf.mIntervalNumber * 10, parts, getMugenAnimationHandlerLiveAmount(), (int)(info.uordblks / 1024), (int)(linearSpaceFree() / 1024),
 			gN3DSPerf.mLateTextures - gPerf.mShownCounters.mLateTextures, gN3DSPerf.mEvictedTextures - gPerf.mShownCounters.mEvictedTextures,
