@@ -64,3 +64,5 @@ bin_n3dssim_track/
 build_3ds_diag/
 bin_3ds_diag/
 bin_n3dssim_diag/
+build_n3dssim_prof/
+bin_n3dssim_prof/
