@@ -23,6 +23,9 @@ namespace prism {
 	void prepareN3DSTexture(const TextureData& tTexture);
 	int isN3DSTextureDrawable(const TextureData& tTexture);
 	unsigned int getN3DSTextureFrame();
+	// Why the last texture asked for could not be made: 0 it could, 1 its
+	// pixels still being read, 2 no heap, 3 no linear memory.
+	int getN3DSLastTextureFailure();
 	void askN3DSTextureReadAhead(const TextureData& tTexture);
 	void issueN3DSTextureReadAhead();
 

@@ -980,7 +980,13 @@ namespace prism {
 		return ((Texture)tTexture.mTexture->mData)->mIsInitialized;
 	}
 
+	// Why the last texture asked for could not be made (0 if it could):
+	// 1 its pixels still being read, 2 no heap, 3 no linear memory.
+	static int gN3DSLastTextureFailure;
+	int getN3DSLastTextureFailure() { return gN3DSLastTextureFailure; }
+
 	void prepareN3DSTexture(const TextureData& tTexture) {
+		gN3DSLastTextureFailure = 0;
 		if (!tTexture.mHasPalette) return;
 
 		Texture texture = (Texture)tTexture.mTexture->mData;
@@ -989,8 +995,12 @@ namespace prism {
 		if (!texture->mIndexed) {
 			if (!texture->mStream) return;
 			const int loaded = loadStreamedPixels(texture, tTexture.mTextureSize.x, tTexture.mTextureSize.y);
-			if (loaded == N3DS_STREAM_PENDING) return;   // being read on the other core
+			if (loaded == N3DS_STREAM_PENDING) {   // being read on the other core
+				gN3DSLastTextureFailure = 1;
+				return;
+			}
 			if (loaded != N3DS_STREAM_LOADED) {
+				gN3DSLastTextureFailure = 2;
 				logWarning("Out of heap memory: a streamed sprite not drawn.");
 				return;
 			}
@@ -999,6 +1009,7 @@ namespace prism {
 		int isMadeLate = 0;
 		if (!texture->mIsInitialized) {
 			if (!makePalettedTexels(texture, tTexture.mTextureSize.x, tTexture.mTextureSize.y, 1)) {
+				gN3DSLastTextureFailure = 3;
 				logWarning("Out of texture (linear) memory: a sprite not drawn.");
 				return;
 			}

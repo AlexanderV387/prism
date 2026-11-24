@@ -40,6 +40,14 @@ namespace prism {
 		uint32_t mStreamed;
 		uint64_t mStreamedTicks;
 		uint32_t mStreamedLetGo;
+		// Sprites with nothing to show (not even the animation's last one
+		// ready), and why their texture could not be made when drawn: its
+		// pixels still being read from the card, or no heap or linear
+		// memory for them.
+		uint32_t mUndrawn;
+		uint32_t mUndrawnPending;
+		uint32_t mUndrawnNoHeap;
+		uint32_t mUndrawnNoLinear;
 	} N3DSPerfCounters;
 
 	extern N3DSPerfCounters gN3DSPerf;

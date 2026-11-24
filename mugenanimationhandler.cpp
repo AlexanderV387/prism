@@ -1335,8 +1335,13 @@ static void drawSingleAnimationDebugCollisionHitboxes(MugenAnimationHandlerEleme
 }
 
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
+}
+#include "3ds/prism3dsperf.h"
+namespace prism {
 int isN3DSTextureDrawable(const TextureData& tTexture);
 void askN3DSTextureReadAhead(const TextureData& tTexture);
+int getN3DSLastTextureFailure();
+unsigned int getN3DSTextureFrame();
 
 // [3DS] The animation's next step, if read from the card when drawn: asked
 // to be read ahead (an animation of big streamed sprites, New Kyouki's
@@ -1350,11 +1355,37 @@ static void readMugenAnimationNextStepAhead(MugenAnimationHandlerElement* e) {
 	for (auto& texture : sprite->mTextures) askN3DSTextureReadAhead(texture.mTexture);
 }
 
+static int gN3DSLastSpriteFailure;
+
 static int isMugenSpriteDrawableNow(MugenSpriteFileSprite* tSprite) {
 	for (auto& texture : tSprite->mTextures) {
-		if (!isN3DSTextureDrawable(texture.mTexture)) return 0;
+		if (!isN3DSTextureDrawable(texture.mTexture)) {
+			gN3DSLastSpriteFailure = getN3DSLastTextureFailure();
+			return 0;
+		}
 	}
 	return 1;
+}
+
+// [3DS] A sprite with nothing to show instead: counted by why (the load
+// log's lines every 10 seconds), the first ones of a screen written with
+// their frame (a player seen vanishing for a moment).
+static void countMugenSpriteUndrawn(MugenAnimationHandlerElement* e) {
+	gN3DSPerf.mUndrawn++;
+	if (gN3DSLastSpriteFailure == 1) gN3DSPerf.mUndrawnPending++;
+	else if (gN3DSLastSpriteFailure == 2) gN3DSPerf.mUndrawnNoHeap++;
+	else if (gN3DSLastSpriteFailure == 3) gN3DSPerf.mUndrawnNoLinear++;
+	static unsigned int written, screenFrame;
+	const unsigned int frame = getN3DSTextureFrame();
+	if (frame < screenFrame) written = 0;
+	screenFrame = frame;
+	if (written >= 40) return;
+	written++;
+	static const char* const reasons[] = { "?", "still being read", "no heap", "no linear memory" };
+	MugenAnimationStep* step = getCurrentAnimationStep(e);
+	addN3DSPerfLine("  sprite not drawn at drawn frame %u: animation %d, sprite %d,%d (%dx%d), %s", frame, e->mAnimation ? e->mAnimation->mID : -1,
+		step ? step->mGroupNumber : -1, step ? step->mSpriteNumber : -1, e->mSprite->mOriginalTextureSize.x, e->mSprite->mOriginalTextureSize.y,
+		reasons[gN3DSLastSpriteFailure >= 0 && gN3DSLastSpriteFailure <= 3 ? gN3DSLastSpriteFailure : 0]);
 }
 
 // [3DS] A sprite read from the card when drawn is not there for a frame or
@@ -1394,6 +1425,7 @@ static MugenSpriteFileSprite* findMugenSpriteToDraw(MugenAnimationHandlerElement
 		e->mPendingSpriteFrames = 0;
 	}
 	if (last && last != e->mSprite && isMugenSpriteDrawableNow(last)) return last;
+	if (e->mSprite) countMugenSpriteUndrawn(e);
 	return e->mSprite;
 }
 #endif
