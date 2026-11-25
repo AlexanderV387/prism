@@ -455,6 +455,7 @@ namespace prism {
 
 	static void* addMemoryToMemoryHandlerMapHashMapStrategy(AllocationStrategy* tStrategy, MemoryHandlerMap* tMap, int tSize) {
 		void* data = tStrategy->mMalloc(tSize);
+		if (!data) return NULL;   // only tryAllocMemory's
 		gMemoryHandler.mAllocatedMemory++;
 
 		return addAllocatedMemoryToMemoryHandlerMapHashMapStrategy(tMap, data);
@@ -507,12 +508,16 @@ namespace prism {
 
 	static void abortOnFailedMainMemoryAllocation(size_t tSize);
 
+	// Set by tryAllocMemory: a failed allocation gives NULL, not the game's end.
+	static int gIsTryingAllocation;
+
 	static void* mainMemoryAllocFunc(size_t tSize) {
 		char* raw = (char*)malloc(MEMORY_HANDLER_ENTRY_SIZE + tSize);
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 		// [3DS] The streamed sprites' pixels go first (read again when drawn).
 		if (!raw && letN3DSStreamedPixelsGo(0)) raw = (char*)malloc(MEMORY_HANDLER_ENTRY_SIZE + tSize);
 #endif
+		if (!raw && gIsTryingAllocation) return NULL;
 		if (!raw) abortOnFailedMainMemoryAllocation(tSize);
 		initMemoryHandlerEntry((MemoryHandlerMapEntry*)(void*)raw);
 		return raw + MEMORY_HANDLER_ENTRY_SIZE;
@@ -828,6 +833,13 @@ namespace prism {
 	void* allocMemory(int tSize) {
 		if (!tSize) return NULL;
 		return addMemoryToMemoryListStack(&gMemoryHandler.mMemoryStack, tSize);
+	}
+
+	void* tryAllocMemory(int tSize) {
+		gIsTryingAllocation = 1;
+		void* ret = allocMemory(tSize);
+		gIsTryingAllocation = 0;
+		return ret;
 	}
 
 	void* allocClearedMemory(int tBlockAmount, int tBlockSize) {

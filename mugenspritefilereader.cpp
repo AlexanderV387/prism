@@ -1290,6 +1290,9 @@ static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawPNGBuffer(Buffer& t
 	}
 }
 
+// setMugenSpriteFileReaderPaletteItem's: palette 1,n made for 1,1 (0, 1 none).
+static int gSpritePaletteItem;
+
 static void insertPaletteIntoMugenSpriteFile(MugenSpriteFile* tSprites, const Buffer& b, int tGroup = -1, int tItem = -1) {
 	assert(isRGBPalette(b) || isARGBPalette(b));
 
@@ -3010,7 +3013,19 @@ static void loadSingleSprite2(SFFHeader2* tHeader, MugenSpriteFile* tDst, int tH
 
 	int isPaletted = sprite.mFormat == 0 || sprite.mFormat == 2 || sprite.mFormat == 4;
 	int isRawPNG = sprite.mFormat == 10 || sprite.mFormat == 11 || sprite.mFormat == 12;
-	const int palette = tHasPalette ? sprite.mPaletteIndex + 1 : sprite.mPaletteIndex;
+	int palette = tHasPalette ? sprite.mPaletteIndex + 1 : sprite.mPaletteIndex;
+	// The color chosen (MUGEN 1.1's palno: palette 1,n for 1,1), with no
+	// palette file, its sprites made in their own colors (a character's
+	// picture on the select screen; in a fight RemapPal's palette slot).
+	if (gSpritePaletteItem > 1 && !gPrismMugenSpriteFileReaderData.mIsUsingRealPalette && palette >= 0 && palette < int(tDst->mPalettes.size())
+		&& tDst->mPalettes[palette].mGroup == 1 && tDst->mPalettes[palette].mItem == 1) {
+		for (int i = 0; i < int(tDst->mPalettes.size()); i++) {
+			if (tDst->mPalettes[i].mGroup == 1 && tDst->mPalettes[i].mItem == gSpritePaletteItem) {
+				palette = i;
+				break;
+			}
+		}
+	}
 
 	MugenSpriteFileSprite e;
 #ifdef __3DS__
@@ -3634,6 +3649,11 @@ void setMugenSpriteFileReaderToUsePalette(int tPaletteID)
 {
 	gPrismMugenSpriteFileReaderData.mIsUsingRealPalette = 1;
 	gPrismMugenSpriteFileReaderData.mPaletteID = tPaletteID;
+}
+
+void setMugenSpriteFileReaderPaletteItem(int tItem)
+{
+	gSpritePaletteItem = tItem;
 }
 
 void setMugenSpriteFileReaderDownscale(int tFactor)

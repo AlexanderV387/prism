@@ -111,6 +111,8 @@ struct TextureMemory_internal {
 typedef struct TextureMemory_internal* TextureMemory;
 
 void* allocMemory(int tSize);
+// As allocMemory, but NULL if there is no room (not the game's end).
+void* tryAllocMemory(int tSize);
 void* allocClearedMemory(int tBlockAmount, int tBlockSize);
 void freeMemory(void* tData);
 void* reallocMemory(void* tData, int tSize);

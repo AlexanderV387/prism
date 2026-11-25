@@ -74,6 +74,10 @@ void setMugenSpriteFileReaderToUsePalette(int tPaletteID);
 void setMugenSpriteFileReaderToNotUsePalette();
 // [3DS] The sprites read from now on made this many times smaller (1: as
 // they are): a 1280x720 stage's are drawn at a third of their size.
+// An SFF v2's sprites using palette 1,1 made in palette 1,tItem instead
+// (MUGEN 1.1's palno with no palette file), when not on a palette slot; 0 or
+// 1 as they are.
+void setMugenSpriteFileReaderPaletteItem(int tItem);
 void setMugenSpriteFileReaderDownscale(int tFactor);
 int getMugenSpriteFileReaderDownscale();
 // [3DS] The texture memory a sprite file's true color sprites (SFF v2's

@@ -10,19 +10,23 @@ namespace prism {
 
 	MemoryStack createMemoryStack(uint32_t tSize)
 	{
+		MemoryStack ret;
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)
 		// [3DS] The heap with plenty free but not in one piece (46 MB free,
 		// no 3 MB block, after many fights): a smaller stack, what does not
-		// fit going outside it, rather than the game's end.
-		while (tSize > 64 * 1024) {
-			void* probe = malloc(tSize + 1024);
-			if (probe) { free(probe); break; }
+		// fit going outside it, rather than the game's end. Its block itself
+		// asked for each time (a free trial block first, then the real one,
+		// still ended the game: 47 MB free, Freddy Krueger vs Art the Clown).
+		ret.mAddress = NULL;
+		while (!ret.mAddress) {
+			ret.mAddress = tSize > 64 * 1024 ? tryAllocMemory(tSize) : allocMemory(tSize);
+			if (ret.mAddress) break;
 			tSize /= 2;
 			logWarningFormat("Memory stack smaller: %u bytes, the heap in pieces.", (unsigned)tSize);
 		}
-#endif
-		MemoryStack ret;
+#else
 		ret.mAddress = allocMemory(tSize);
+#endif
 		ret.mSize = tSize;
 		ret.mOffset = 0;
 		ret.mAmount = 0;
