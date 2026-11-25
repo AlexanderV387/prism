@@ -452,6 +452,37 @@ static Buffer decodeRLE8BufferAndReturnOwnedBuffer(const Buffer& b, int tFinalSi
 	return makeBufferOwned(output, tFinalSize);
 }
 
+// setMugenSpriteFileReaderFindingVisible's, and the last sprite's part found.
+static int gIsFindingVisible;
+static int gVisible[4] = { 0, 0, -1, -1 };
+
+// The part of an image not transparent: an 8-bit one's (index 0 is) or an
+// ARGB32 one's (alpha 0 is).
+static void findVisible(const uint8_t* tData, int tStride, int tWidth, int tHeight, int tBytesPerPixel) {
+	int x0 = tWidth, y0 = tHeight, x1 = -1, y1 = -1;
+	for (int y = 0; y < tHeight; y++) {
+		const uint8_t* line = tData + (size_t)y * tStride;
+		for (int x = 0; x < tWidth; x++) {
+			const int isVisible = tBytesPerPixel == 1 ? line[x] != 0 : ((const uint32_t*)line)[x] >> 24 != 0;
+			if (!isVisible) continue;
+			if (x < x0) x0 = x;
+			if (x > x1) x1 = x;
+			if (y < y0) y0 = y;
+			y1 = y;
+		}
+	}
+	if (x1 < 0) { gVisible[0] = gVisible[1] = 0; gVisible[2] = gVisible[3] = -1; return; }
+	gVisible[0] = x0; gVisible[1] = y0; gVisible[2] = x1 + 1; gVisible[3] = y1 + 1;
+}
+
+static void setFoundVisible(MugenSpriteFileSprite* tSprite) {
+	if (!gIsFindingVisible) return;
+	tSprite->mVisibleX0 = gVisible[0];
+	tSprite->mVisibleY0 = gVisible[1];
+	tSprite->mVisibleX1 = gVisible[2];
+	tSprite->mVisibleY1 = gVisible[3];
+}
+
 static MugenSpriteFileSprite makeMugenSpriteFileSprite(const std::vector<MugenSpriteFileSubSprite>& tTextures, const TextureSize& tOriginalTextureSize, const Vector2D& tAxisOffset) {
 	MugenSpriteFileSprite e;
 	e.mTextures = tTextures;
@@ -906,6 +937,7 @@ static Buffer loadBufferFromRawPNGBuffer(const Buffer& tRawPNGBuffer, int tWidth
 }
 
 static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawAndPaletteBufferGeneral(Buffer& tRawImageBuffer, const Buffer& tPaletteBuffer, int tIsUsingPaletteBuffer, int tWidth, int tHeight, int tBytesPerLine, const Vector2D& tAxisOffset) {
+	if (gIsFindingVisible && tRawImageBuffer.mData) findVisible((const uint8_t*)tRawImageBuffer.mData, tBytesPerLine, tWidth, tHeight, 1);
 	const int downscale = gPrismMugenSpriteFileReaderData.mDownscale;
 	std::vector<SubImageBuffer> subImageList;
 	if (downscale > 1) {
@@ -930,7 +962,9 @@ static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawAndPaletteBufferGen
 	freeSubImageBufferList(subImageList);
 	if (downscale > 1) setSubSpritesDownscaled(textures, downscale);
 
-	return makeMugenSpriteFileSprite(textures, makeTextureSize(tWidth, tHeight), tAxisOffset);
+	auto ret = makeMugenSpriteFileSprite(textures, makeTextureSize(tWidth, tHeight), tAxisOffset);
+	setFoundVisible(&ret);
+	return ret;
 }
 
 static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawAndPaletteBuffer(Buffer& tRawImageBuffer, const Buffer& tPaletteBuffer, int tWidth, int tHeight, int tBytesPerLine, const Vector2D& tAxisOffset) {
@@ -1279,6 +1313,10 @@ static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawPNGBuffer(Buffer& t
 #endif
 		freeBuffer(tRawPNGBuffer);
 
+		if (gIsFindingVisible && argb32Buffer.mData) {
+			findVisible((const uint8_t*)argb32Buffer.mData, (downscale > 1 ? width : tBytesPerLine) * 4, width, height, 4);
+			if (downscale > 1) for (int k = 0; k < 4; k++) gVisible[k] *= downscale;
+		}
 		auto subImageList = breakImageBufferUpIntoMultipleBuffers(argb32Buffer, downscale > 1 ? width : tBytesPerLine, width, height, 4);
 		freeBuffer(argb32Buffer);
 
@@ -1286,7 +1324,9 @@ static MugenSpriteFileSprite makeMugenSpriteFileSpriteFromRawPNGBuffer(Buffer& t
 		freeSubImageBufferList(subImageList);
 		if (downscale > 1) setSubSpritesDownscaled(textures, downscale);
 
-		return makeMugenSpriteFileSprite(textures, makeTextureSize(tWidth, tHeight), tAxisOffset);
+		auto ret = makeMugenSpriteFileSprite(textures, makeTextureSize(tWidth, tHeight), tAxisOffset);
+		setFoundVisible(&ret);
+		return ret;
 	}
 }
 
@@ -3535,7 +3575,11 @@ MugenSpriteFile loadMugenSpriteFileSingleSprite(const char* tPath, int tHasPalet
 	d.mPartialAmount = 1;
 	d.mIsPartialPortraits = 0;
 	d.mPartialMaxHeight = tMaximumHeight;
+	// Its visible part found too (a picture of the character, its canvas
+	// maybe mostly empty: Art the Clown's 1176x764).
+	gIsFindingVisible = 1;
 	MugenSpriteFile ret = loadMugenSpriteFileGeneral(tPath, tHasPaletteFile, tOptionalPaletteFile);
+	gIsFindingVisible = 0;
 	d.mPartialGroup = 9000;
 	d.mPartialMinItem = 0;
 	d.mPartialMaxItem = 1;
@@ -3649,6 +3693,11 @@ void setMugenSpriteFileReaderToUsePalette(int tPaletteID)
 {
 	gPrismMugenSpriteFileReaderData.mIsUsingRealPalette = 1;
 	gPrismMugenSpriteFileReaderData.mPaletteID = tPaletteID;
+}
+
+void setMugenSpriteFileReaderFindingVisible(int tIsFinding)
+{
+	gIsFindingVisible = tIsFinding;
 }
 
 void setMugenSpriteFileReaderPaletteItem(int tItem)

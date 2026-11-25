@@ -24,6 +24,11 @@ typedef struct {
 	int mIsLinkedTo;
 
 	Vector2D mAxisOffset;
+
+	// Where its pixels are not transparent (x0, y0 to x1, y1, past the
+	// last), found only when asked (setMugenSpriteFileReaderFindingVisible);
+	// x1 < 0 not found (the whole sprite).
+	int mVisibleX0 = 0, mVisibleY0 = 0, mVisibleX1 = -1, mVisibleY1 = -1;
 } MugenSpriteFileSprite;
 
 typedef struct {
@@ -78,6 +83,9 @@ void setMugenSpriteFileReaderToNotUsePalette();
 // (MUGEN 1.1's palno with no palette file), when not on a palette slot; 0 or
 // 1 as they are.
 void setMugenSpriteFileReaderPaletteItem(int tItem);
+// Each sprite's visible part found as it is read (its mVisibleX0...): a
+// character's picture on the select screen, its canvas mostly empty.
+void setMugenSpriteFileReaderFindingVisible(int tIsFinding);
 void setMugenSpriteFileReaderDownscale(int tFactor);
 int getMugenSpriteFileReaderDownscale();
 // [3DS] The texture memory a sprite file's true color sprites (SFF v2's
