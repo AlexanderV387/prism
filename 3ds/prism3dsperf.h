@@ -44,6 +44,10 @@ namespace prism {
 		// ready), and why their texture could not be made when drawn: its
 		// pixels still being read from the card, or no heap or linear
 		// memory for them.
+		// Of the ones made when drawn, the big ones (64K texels or more:
+		// full-screen pictures), and their time.
+		uint32_t mLateBigTextures;
+		uint64_t mLateBigTicks;
 		uint32_t mUndrawn;
 		uint32_t mUndrawnPending;
 		uint32_t mUndrawnNoHeap;

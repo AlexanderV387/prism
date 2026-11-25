@@ -5,6 +5,7 @@
 #include <png.h>
 
 #include <algorithm>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -728,6 +729,25 @@ namespace prism {
 		}
 	}
 
+	// Its texels cleared where the sprite's (its first tWidth x tHeight,
+	// written next by fillPalettedTexels) do not cover whole tiles: not the
+	// whole texture (a 500x400 sprite's 512x512, 512 KB, every frame of New
+	// Kyouki's ultimate).
+	static void clearPalettedTexelsOutside(C3D_Tex* tTex, int tWidth, int tHeight) {
+		u16* data = (u16*)tTex->data;
+		const int tilesWide = tTex->width >> 3;
+		const size_t tileRowTexels = (size_t)tilesWide * 64;
+		// Memory's tile rows go from the texture's bottom: the first ones are
+		// below the sprite (or partly).
+		const int uncoveredRows = (tTex->height - tHeight + 7) >> 3;
+		memset(data, 0, uncoveredRows * tileRowTexels * sizeof(u16));
+		const int coveredTiles = tWidth >> 3;
+		if (coveredTiles >= tilesWide) return;
+		for (int r = uncoveredRows; r < (tTex->height >> 3); r++) {
+			memset(data + r * tileRowTexels + (size_t)coveredTiles * 64, 0, (size_t)(tilesWide - coveredTiles) * 64 * sizeof(u16));
+		}
+	}
+
 	static int makePalettedTexels(Texture tTexture, int tWidth, int tHeight, int tIsEvicting) {
 		const int placeWidth = roundUpTo8(tWidth + 1), placeHeight = roundUpTo8(tHeight + 1);
 		if (placeWidth <= ATLAS_MAXIMUM_PLACE && placeHeight <= ATLAS_MAXIMUM_PLACE) return makeAtlasTexels(tTexture, placeWidth, placeHeight, tIsEvicting);
@@ -742,7 +762,7 @@ namespace prism {
 		tTexture->mAtlasPage = -1;
 		C3D_TexSetFilter(&tTexture->mTex, GPU_NEAREST, GPU_NEAREST);
 		C3D_TexSetWrap(&tTexture->mTex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
-		memset(tTexture->mTex.data, 0, tTexture->mTex.size);
+		clearPalettedTexelsOutside(&tTexture->mTex, clampedWidth(tWidth), clampedWidth(tHeight));
 		gResidentTextures.insert(tTexture);
 		return 1;
 	}
@@ -1015,13 +1035,28 @@ namespace prism {
 			}
 			gN3DSPerf.mLateTextures++;
 			isMadeLate = 1;
+#if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+			// For finding textures made again and again (N3DS_SIM_TRACE_LATE).
+			static const int traceLate = getenv("N3DS_SIM_TRACE_LATE") ? 1 : 0;
+			if (traceLate) {
+				static std::map<Texture, int> made;
+				printf("LATE %u %dx%d %s %s made %d\n", gN3DSTextureFrame, tTexture.mTextureSize.x, tTexture.mTextureSize.y, texture->mStream ? "streamed" : "kept", texture->mAtlasPage >= 0 ? "atlas" : "own", ++made[texture]);
+			}
+#endif
 		}
 		if (texture->mPaletteVersion == getPaletteVersion(tTexture)) return;
 		const int isRepaletted = !isMadeLate && texture->mPaletteVersion != -1;
 
 		fillPalettedTexels(tTexture, decompressIndices(texture, tTexture.mTextureSize.x * tTexture.mTextureSize.y));
 		countTexture(start, clampedWidth(tTexture.mTextureSize.x), clampedWidth(tTexture.mTextureSize.y));
-		if (isMadeLate) gN3DSPerf.mLateTextureTicks += getN3DSPerfTicks() - start;
+		if (isMadeLate) {
+			const uint64_t ticks = getN3DSPerfTicks() - start;
+			gN3DSPerf.mLateTextureTicks += ticks;
+			if (tTexture.mTextureSize.x * tTexture.mTextureSize.y >= 65536) {
+				gN3DSPerf.mLateBigTextures++;
+				gN3DSPerf.mLateBigTicks += ticks;
+			}
+		}
 		else if (isRepaletted) {
 			gN3DSPerf.mRepaletted++;
 			gN3DSPerf.mRepalettedTicks += getN3DSPerfTicks() - start;

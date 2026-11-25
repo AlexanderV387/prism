@@ -110,12 +110,12 @@ namespace prism {
 	static double sinceStart() { return getN3DSPerfMilliseconds(getN3DSPerfTicks() - gPerf.mStart); }
 
 	void addN3DSPerfLine(const char* tFormat, ...) {
-		char line[512];
+		char line[2048];
 		va_list args;
 		va_start(args, tFormat);
 		vsnprintf(line, sizeof(line), tFormat, args);
 		va_end(args);
-		char stamped[600];
+		char stamped[2100];
 		snprintf(stamped, sizeof(stamped), "%9.1f %s\n", sinceStart(), line);
 		gPerf.mPending += stamped;
 	}
@@ -506,9 +506,11 @@ namespace prism {
 		// The drawing's, a drawn frame's milliseconds.
 		const size_t logicLength = strlen(logicParts);
 		describeParts(&gDrawParts, "drawing parts", gPerf.mInterval.mFrames, logicParts + logicLength, sizeof(logicParts) - logicLength);
-		addN3DSPerfLine("  at %d s: %s | %d animations | heap %d KB used, linear memory %d KB free, %u textures made while shown, %u let go, %u made again for a palette (%.0f ms), %u streamed sprites read (%.0f ms), %u let go, %u sprites not drawn (%u being read, %u no heap, %u no linear memory)%s",
+		addN3DSPerfLine("  at %d s: %s | %d animations | heap %d KB used, linear memory %d KB free, %u textures made while shown (%.0f ms; %u big, %.0f ms), %u let go, %u made again for a palette (%.0f ms), %u streamed sprites read (%.0f ms), %u let go, %u sprites not drawn (%u being read, %u no heap, %u no linear memory)%s",
 			gPerf.mIntervalNumber * 10, parts, getMugenAnimationHandlerLiveAmount(), (int)(info.uordblks / 1024), (int)(linearSpaceFree() / 1024),
-			gN3DSPerf.mLateTextures - gPerf.mShownCounters.mLateTextures, gN3DSPerf.mEvictedTextures - gPerf.mShownCounters.mEvictedTextures,
+			gN3DSPerf.mLateTextures - gPerf.mShownCounters.mLateTextures, getN3DSPerfMilliseconds(gN3DSPerf.mLateTextureTicks - gPerf.mShownCounters.mLateTextureTicks),
+			gN3DSPerf.mLateBigTextures - gPerf.mShownCounters.mLateBigTextures, getN3DSPerfMilliseconds(gN3DSPerf.mLateBigTicks - gPerf.mShownCounters.mLateBigTicks),
+			gN3DSPerf.mEvictedTextures - gPerf.mShownCounters.mEvictedTextures,
 			gN3DSPerf.mRepaletted - gPerf.mShownCounters.mRepaletted, getN3DSPerfMilliseconds(gN3DSPerf.mRepalettedTicks - gPerf.mShownCounters.mRepalettedTicks),
 			gN3DSPerf.mStreamed - gPerf.mShownCounters.mStreamed, getN3DSPerfMilliseconds(gN3DSPerf.mStreamedTicks - gPerf.mShownCounters.mStreamedTicks), gN3DSPerf.mStreamedLetGo - gPerf.mShownCounters.mStreamedLetGo,
 			gN3DSPerf.mUndrawn - gPerf.mShownCounters.mUndrawn, gN3DSPerf.mUndrawnPending - gPerf.mShownCounters.mUndrawnPending,
