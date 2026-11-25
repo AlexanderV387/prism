@@ -87,12 +87,17 @@ void setMugenSpriteFileReaderPaletteItem(int tItem);
 // character's picture on the select screen, its canvas mostly empty.
 void setMugenSpriteFileReaderFindingVisible(int tIsFinding);
 void setMugenSpriteFileReaderDownscale(int tFactor);
+// [3DS] With a factor above: the sprites no longer than tSide on either side
+// read whole (0: none): a high resolution character's hit sparks, drawn at
+// their own size, not at its.
+void setMugenSpriteFileReaderKeepingSmallSpritesWhole(int tSide);
 int getMugenSpriteFileReaderDownscale();
 // [3DS] The texture memory a sprite file's true color sprites (SFF v2's
 // PNG24 and PNG32: kept as they are, never let go) would take read
-// tFactor times smaller, from its sprite list alone; -1 when it cannot
-// tell (an SFF v1, a file that cannot be read).
-long long estimateMugenSpriteFileTrueColorTextureBytes(const char* tPath, int tFactor);
+// tFactor times smaller (those no longer than tWholeSide whole), from its
+// sprite list alone; -1 when it cannot tell (an SFF v1, a file that cannot
+// be read).
+long long estimateMugenSpriteFileTrueColorTextureBytes(const char* tPath, int tFactor, int tWholeSide = 0);
 void setMugenSpriteFileReaderCustomFunctionsAndForceARGB16(TextureData(*mCustomLoadTextureFromARGB16Buffer)(const Buffer&, int, int), TextureData(*mCustomLoadTextureFromARGB32Buffer)(const Buffer&, int, int), TextureData(*mCustomLoadPalettedTextureFrom8BitBuffer)(const Buffer&, int, int, int));
 void setMugenSpriteFileReaderSubTextureSplit(int tSubTextureSplitMin, int tSubTextureSplitMax);
 #if defined(__3DS__) || defined(N3DS_TEXTURE_SIM)

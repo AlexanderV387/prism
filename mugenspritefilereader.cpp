@@ -190,7 +190,15 @@ static struct {
 	int mSubTextureSplitMax = 64;
 
 	int mDownscale = 1;
+	int mWholeSide = 0;     // with mDownscale: sprites no longer than this on either side read whole
 } gPrismMugenSpriteFileReaderData;
+
+// A sprite's factor: the reader's, but 1 for one small enough to be kept
+// whole (setMugenSpriteFileReaderKeepingSmallSpritesWhole).
+static int getSpriteDownscale(int tFactor, int tWidth, int tHeight, int tWholeSide) {
+	if (tFactor <= 1) return 1;
+	return (tWholeSide > 0 && tWidth <= tWholeSide && tHeight <= tWholeSide) ? 1 : tFactor;
+}
 
 static uint32_t get2DBufferIndex(uint32_t i, uint32_t j, uint32_t w) {
 	return j * w + i;
@@ -2697,6 +2705,17 @@ static void loadSingleSFFFileWithHeader(const SFFSubFileHeader& subHeader, Mugen
 	// Portraits never read smaller (as for SFF v2's).
 	const int downscale = gPrismMugenSpriteFileReaderData.mDownscale;
 	if (subHeader.mGroup == 9000) gPrismMugenSpriteFileReaderData.mDownscale = 1;
+	// A small one read whole (a high resolution character's hit sparks:
+	// drawn at their size, not its).
+	else if (downscale > 1 && gPrismMugenSpriteFileReaderData.mWholeSide > 0 && subHeader.mSubfileLength >= sizeof(PCXHeader)
+		&& (!gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits || isWantedPartialSprite(subHeader.mGroup, subHeader.mImage))) {
+		auto& reader = gPrismMugenSpriteFileReaderData.mReader;
+		const uint32_t position = reader.mGetCurrentOffset(&reader);
+		PCXHeader pcx;
+		reader.mRead(&reader, &pcx, sizeof(PCXHeader));
+		reader.mSeek(&reader, position);
+		gPrismMugenSpriteFileReaderData.mDownscale = getSpriteDownscale(downscale, pcx.mMaxX - pcx.mMinX + 1, pcx.mMaxY - pcx.mMinY + 1, gPrismMugenSpriteFileReaderData.mWholeSide);
+	}
 	loadSingleSFFFileWithHeaderAtDownscale(subHeader, tDst);
 	gPrismMugenSpriteFileReaderData.mDownscale = downscale;
 }
@@ -3165,10 +3184,12 @@ static void loadSingleSprite2KeepingPortraitsWhole(SFFHeader2* tHeader, MugenSpr
 	const int downscale = gPrismMugenSpriteFileReaderData.mDownscale;
 	if (downscale > 1) {
 		const uint32_t position = gPrismMugenSpriteFileReaderData.mReader.mGetCurrentOffset(&gPrismMugenSpriteFileReaderData.mReader);
-		uint16_t group = 0;
-		gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &group, sizeof(group));
+		SFFSprite2 sprite;
+		gPrismMugenSpriteFileReaderData.mReader.mRead(&gPrismMugenSpriteFileReaderData.mReader, &sprite, sizeof(sprite));
 		gPrismMugenSpriteFileReaderData.mReader.mSeek(&gPrismMugenSpriteFileReaderData.mReader, position);
-		if (group == 9000) gPrismMugenSpriteFileReaderData.mDownscale = 1;
+		if (sprite.mGroupNo == 9000) gPrismMugenSpriteFileReaderData.mDownscale = 1;
+		// A small one too (a high resolution character's hit sparks).
+		else gPrismMugenSpriteFileReaderData.mDownscale = getSpriteDownscale(downscale, sprite.mWidth, sprite.mHeight, gPrismMugenSpriteFileReaderData.mWholeSide);
 	}
 	// A single sprite wanted at about some height: a high resolution one read smaller.
 	if (gPrismMugenSpriteFileReaderData.mIsOnlyLoadingPortraits && gPrismMugenSpriteFileReaderData.mPartialMaxHeight > 0) {
@@ -3728,6 +3749,11 @@ void setMugenSpriteFileReaderDownscale(int tFactor)
 	gPrismMugenSpriteFileReaderData.mDownscale = tFactor < 1 ? 1 : tFactor;
 }
 
+void setMugenSpriteFileReaderKeepingSmallSpritesWhole(int tSide)
+{
+	gPrismMugenSpriteFileReaderData.mWholeSide = tSide < 0 ? 0 : tSide;
+}
+
 int getMugenSpriteFileReaderDownscale()
 {
 	return gPrismMugenSpriteFileReaderData.mDownscale;
@@ -3760,7 +3786,7 @@ static long long getPaddedTexelLength(int tLength) {
 	return ret;
 }
 
-long long estimateMugenSpriteFileTrueColorTextureBytes(const char* tPath, int tFactor) {
+long long estimateMugenSpriteFileTrueColorTextureBytes(const char* tPath, int tFactor, int tWholeSide) {
 	if (tFactor < 1) tFactor = 1;
 	FileHandler file = fileOpen(tPath, O_RDONLY);
 	if (file == FILEHND_INVALID) return -1;
@@ -3777,7 +3803,7 @@ long long estimateMugenSpriteFileTrueColorTextureBytes(const char* tPath, int tF
 				if (!sprite.mDataLength) continue;   // linked to another
 				if (sprite.mFormat != 11 && sprite.mFormat != 12) continue;
 				// The portraits read whole (see loadSingleSprite2KeepingPortraitsWhole).
-				const int factor = sprite.mGroupNo == 9000 ? 1 : tFactor;
+				const int factor = sprite.mGroupNo == 9000 ? 1 : getSpriteDownscale(tFactor, sprite.mWidth, sprite.mHeight, tWholeSide);
 				const int w = (sprite.mWidth + factor - 1) / factor, h = (sprite.mHeight + factor - 1) / factor;
 				ret += getPaddedTexelLength(w) * getPaddedTexelLength(h) * 4;
 			}
