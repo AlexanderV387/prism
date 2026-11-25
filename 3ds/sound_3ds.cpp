@@ -241,6 +241,7 @@ namespace prism {
 			LightLock_Lock(&gN3DSMusic.mLock);
 			if (gN3DSMusic.mType != DECODER_NONE && !gN3DSMusic.mIsPaused) fillBuffers();
 			LightLock_Unlock(&gN3DSMusic.mLock);
+			fillN3DSSoundStreams();
 		}
 	}
 

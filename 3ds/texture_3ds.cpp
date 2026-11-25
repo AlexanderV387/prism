@@ -18,6 +18,7 @@
 
 #include <malloc.h>
 
+#include <zstd.h>
 #include "prism3ds.h"
 #include "prism3dsperf.h"
 
@@ -473,14 +474,17 @@ namespace prism {
 		return texture->mOwnPalette >= 0 ? OWN_PALETTE_VERSION : gN3DSPaletteVersions[tTexture.mPaletteID & 3];
 	}
 
+	// A paletted texture's indices kept in the heap: a byte saying how, then
+	// them. zstd (level 1, setN3DSKeptIndicesSmaller): a third smaller than the runs kept
+	// before (Abyss's sprites: 6.1 MB against 9.7), more of a big fight's
+	// sprites in the heap and fewer read from the card when drawn; the runs
+	// if it could not be.
+	enum { INDICES_RUNS = 0, INDICES_ZSTD = 1 };
+
 	// Runs: a byte n < 128, then n + 1 bytes as they are; a byte n >= 128,
-	// then one byte n - 127 times.
-	static unsigned char* compressIndices(const unsigned char* tSource, int tSize, int* oCompressedSize) {
-		// At most one byte more for each 128 (literals all the way).
-		std::vector<unsigned char>& out = gIndexScratch;
-		reserveIndexScratch();
-		out.resize((size_t)tSize + tSize / 128 + 2);
-		unsigned char* o = out.data();
+	// then one byte n - 127 times. Into o (room for tSize + tSize / 128 + 2);
+	// its end.
+	static unsigned char* writeIndexRuns(const unsigned char* tSource, int tSize, unsigned char* o) {
 		int i = 0;
 		while (i < tSize) {
 			const unsigned char value = tSource[i];
@@ -512,34 +516,123 @@ namespace prism {
 			memcpy(o, tSource + literalStart, length);
 			o += length;
 		}
-		const size_t size = o - out.data();
+		return o;
+	}
+
+#if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+	size_t gN3DSIndexRunsBytes, gN3DSIndexKeptBytes, gN3DSIndexRawBytes;
+#endif
+
+	// zstd only when set (a big fight's load and the fight): it takes some
+	// time more to compress at load than the runs.
+	static int gIsKeepingIndicesSmaller;
+	static ZSTD_CCtx* gIndexCompressor;
+	static ZSTD_DCtx* gIndexDecompressor;
+
+	static ZSTD_CCtx* getIndexCompressor() {
+		if (!gIndexCompressor) {
+			gIndexCompressor = ZSTD_createCCtx();
+			if (gIndexCompressor) {
+				ZSTD_CCtx_setParameter(gIndexCompressor, ZSTD_c_compressionLevel, 1);
+				// A small window: its memory, not the sprite's (a megabyte at most).
+				ZSTD_CCtx_setParameter(gIndexCompressor, ZSTD_c_windowLog, 17);
+				ZSTD_CCtx_setParameter(gIndexCompressor, ZSTD_c_checksumFlag, 0);
+				ZSTD_CCtx_setParameter(gIndexCompressor, ZSTD_c_contentSizeFlag, 0);
+			}
+		}
+		return gIndexCompressor;
+	}
+
+	// Set: its contexts made now (before the load's sprites, low in the
+	// heap); unset (the fight's end, its sprites let go): let go, nothing
+	// left in the heap's middle for the next one.
+	void setN3DSKeptIndicesSmaller(int tIsSmaller) {
+		gIsKeepingIndicesSmaller = tIsSmaller;
+		if (tIsSmaller) {
+			getIndexCompressor();
+			if (!gIndexDecompressor) gIndexDecompressor = ZSTD_createDCtx();
+			return;
+		}
+		if (gIndexCompressor) ZSTD_freeCCtx(gIndexCompressor);
+		if (gIndexDecompressor) ZSTD_freeDCtx(gIndexDecompressor);
+		gIndexCompressor = NULL;
+		gIndexDecompressor = NULL;
+	}
+
+	// The indices kept (malloc'ed), their size in *oCompressedSize; NULL if
+	// there is no room.
+	static unsigned char* compressIndices(const unsigned char* tSource, int tSize, int* oCompressedSize) {
+		std::vector<unsigned char>& out = gIndexScratch;
+		reserveIndexScratch();
+		const size_t runsBound = (size_t)tSize + tSize / 128 + 2;
+		const size_t zstdBound = ZSTD_compressBound((size_t)tSize);
+		out.resize(1 + std::max(runsBound, zstdBound));
+		size_t size = 0;
+		if (ZSTD_CCtx* compressor = gIsKeepingIndicesSmaller ? getIndexCompressor() : NULL) {
+			const size_t written = ZSTD_compress2(compressor, out.data() + 1, out.size() - 1, tSource, (size_t)tSize);
+			if (!ZSTD_isError(written)) {
+				out[0] = INDICES_ZSTD;
+				size = 1 + written;
+			}
+		}
+		if (!size) {
+			out[0] = INDICES_RUNS;
+			size = writeIndexRuns(tSource, tSize, out.data() + 1) - out.data();
+		}
+#if defined(N3DS_TEXTURE_SIM) && !defined(__3DS__)
+		// What the runs alone would have taken (N3DS_SIM_INDEX_STATS: slower).
+		static const int isCounting = getenv("N3DS_SIM_INDEX_STATS") ? 1 : 0;
+		if (isCounting) {
+			std::vector<unsigned char> runs((size_t)tSize + tSize / 128 + 2);
+			gN3DSIndexRunsBytes += size_t(writeIndexRuns(tSource, tSize, runs.data()) - runs.data()) + 1;
+			gN3DSIndexKeptBytes += size;
+			gN3DSIndexRawBytes += size_t(tSize);
+		}
+#endif
 		unsigned char* ret = (unsigned char*)malloc(size);
 		if (ret) memcpy(ret, out.data(), size);
 		*oCompressedSize = (int)size;
 		return ret;
 	}
 
-	static const unsigned char* decompressIndices(const Texture tTexture, int tSize) {
-		std::vector<unsigned char>& out = gIndexScratch;
-		reserveIndexScratch();
-		out.resize(tSize);
-		const unsigned char* p = tTexture->mIndexed;
-		const unsigned char* end = p + tTexture->mIndexedSize;
+	// Kept indices (compressIndices's) back to tSize bytes into oDst.
+	void decodeN3DSIndices(const unsigned char* tData, int tDataSize, unsigned char* oDst, int tSize) {
+		if (tDataSize < 1) {
+			memset(oDst, 0, tSize);
+			return;
+		}
+		if (tData[0] == INDICES_ZSTD) {
+			if (!gIndexDecompressor) gIndexDecompressor = ZSTD_createDCtx();
+			const size_t got = gIndexDecompressor ? ZSTD_decompressDCtx(gIndexDecompressor, oDst, (size_t)tSize, tData + 1, (size_t)tDataSize - 1) : 0;
+			if (ZSTD_isError(got)) memset(oDst, 0, tSize);
+			else if ((int)got < tSize) memset(oDst + got, 0, tSize - got);
+			return;
+		}
+		const unsigned char* p = tData + 1;
+		const unsigned char* end = tData + tDataSize;
 		int i = 0;
 		while (p < end && i < tSize) {
 			const int c = *p++;
 			if (c & 0x80) {
 				const int run = std::min((c & 0x7F) + 1, tSize - i);
-				memset(&out[i], *p++, run);
+				memset(oDst + i, *p++, run);
 				i += run;
 			}
 			else {
 				const int length = std::min(c + 1, tSize - i);
-				memcpy(&out[i], p, length);
+				memcpy(oDst + i, p, length);
 				p += c + 1;
 				i += length;
 			}
 		}
+		if (i < tSize) memset(oDst + i, 0, tSize - i);
+	}
+
+	static const unsigned char* decompressIndices(const Texture tTexture, int tSize) {
+		std::vector<unsigned char>& out = gIndexScratch;
+		reserveIndexScratch();
+		out.resize(tSize);
+		decodeN3DSIndices(tTexture->mIndexed, tTexture->mIndexedSize, out.data(), tSize);
 		return out.data();
 	}
 

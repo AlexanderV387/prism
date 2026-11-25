@@ -36,6 +36,7 @@
 #include <setjmp.h>
 #include <mutex>
 #include <condition_variable>
+#include <deque>
 #include <thread>
 #include <chrono>
 #include <vector>
@@ -1581,17 +1582,27 @@ typedef struct {
 	uint16_t mBytesPerLine, mHeight;
 } N3DSStreamRequest;
 
-enum { N3DS_WORKER_IDLE, N3DS_WORKER_ASKED, N3DS_WORKER_WORKING, N3DS_WORKER_DONE };
+typedef struct {
+	N3DSStreamRequest mRequest;
+	std::vector<uint8_t> mImage;
+	int mIsValid;
+} N3DSStreamResult;
+
+// Several asked at once, read one after the other: one at a time, the
+// others waited for the next frame to be asked (Abyss against Onslaught:
+// 1588 read in a minute, sprites not drawn while being read, and the small
+// ones read on the game's core meanwhile, up to 8 ms a frame).
+static const size_t N3DS_WORKER_REQUESTS = 6;
 
 typedef struct {
 	std::mutex mMutex;
 	std::condition_variable mCondition;
-	int mState = N3DS_WORKER_IDLE;
+	std::deque<N3DSStreamRequest> mQueue;   // asked, not started
+	int mIsWorking = 0;
+	N3DSStreamRequest mWorkingOn;
+	std::vector<N3DSStreamResult> mDone;    // read, not taken yet
 	int mIsStarted = 0;
 	int mIsAvailable = 0;
-	N3DSStreamRequest mRequest;
-	std::vector<uint8_t> mResult;
-	int mIsResultValid = 0;
 	uint32_t mReads = 0;         // for the load log: read there,
 	uint64_t mReadTicks = 0;     // how long it took,
 	uint32_t mGameCoreReads = 0; // and read on the game's core instead
@@ -1745,9 +1756,11 @@ static void runN3DSStreamWorker(void*) {
 		N3DSStreamRequest request;
 		{
 			std::unique_lock<std::mutex> lock(gN3DSWorker.mMutex);
-			gN3DSWorker.mCondition.wait(lock, [] { return gN3DSWorker.mState == N3DS_WORKER_ASKED; });
-			gN3DSWorker.mState = N3DS_WORKER_WORKING;
-			request = gN3DSWorker.mRequest;
+			gN3DSWorker.mCondition.wait(lock, [] { return !gN3DSWorker.mQueue.empty(); });
+			request = gN3DSWorker.mQueue.front();
+			gN3DSWorker.mQueue.pop_front();
+			gN3DSWorker.mIsWorking = 1;
+			gN3DSWorker.mWorkingOn = request;
 		}
 		std::vector<uint8_t> image;
 		int isValid = 0;
@@ -1762,14 +1775,20 @@ static void runN3DSStreamWorker(void*) {
 		}
 		{
 			std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
-			gN3DSWorker.mResult.swap(image);
-			gN3DSWorker.mIsResultValid = isValid;
-			gN3DSWorker.mState = N3DS_WORKER_DONE;
-			if (request.mKind != N3DS_STREAM_CLOSE) gN3DSWorker.mReads++;
+			if (request.mKind != N3DS_STREAM_CLOSE) {
+				gN3DSWorker.mDone.emplace_back();
+				N3DSStreamResult& result = gN3DSWorker.mDone.back();
+				result.mRequest = request;
+				result.mImage.swap(image);
+				result.mIsValid = isValid;
+				gN3DSWorker.mReads++;
+			}
+			gN3DSWorker.mIsWorking = 0;
 #ifdef __3DS__
 			gN3DSWorker.mReadTicks += svcGetSystemTick() - start;
 #endif
 		}
+		gN3DSWorker.mCondition.notify_all();
 	}
 }
 
@@ -1802,38 +1821,95 @@ static void startN3DSStreamWorker() {
 #endif
 }
 
-// A sprite read on the other core and not taken yet, let go (the heap is short).
+// The sprites read on the other core and not taken yet, let go (the heap is short).
 static void dropN3DSStreamWorkerResult() {
 	if (!gN3DSWorker.mIsAvailable) return;
 	std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
-	if (gN3DSWorker.mState != N3DS_WORKER_DONE) return;
-	std::vector<uint8_t>().swap(gN3DSWorker.mResult);
-	gN3DSWorker.mState = N3DS_WORKER_IDLE;
+	std::vector<N3DSStreamResult>().swap(gN3DSWorker.mDone);
+}
+
+static int isSameN3DSStreamRequest(const N3DSStreamRequest& tRequest, const std::string* tPath, uint32_t tOffset) {
+	return tRequest.mPath == tPath && tRequest.mOffset == tOffset;
+}
+
+// Whether it is asked of the other core already (waiting, or being read).
+static int isN3DSStreamAskedOfWorker(const std::string* tPath, uint32_t tOffset) {
+	std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
+	if (gN3DSWorker.mIsWorking && isSameN3DSStreamRequest(gN3DSWorker.mWorkingOn, tPath, tOffset)) return 1;
+	for (const auto& request : gN3DSWorker.mQueue) {
+		if (isSameN3DSStreamRequest(request, tPath, tOffset)) return 1;
+	}
+	return 0;
+}
+
+// Asked of the other core, if it has room for another; 0 if not.
+static int askN3DSStreamOfWorker(const N3DSStreamRequest& tRequest) {
+	{
+		std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
+		if (gN3DSWorker.mQueue.size() + gN3DSWorker.mDone.size() + gN3DSWorker.mIsWorking >= N3DS_WORKER_REQUESTS) return 0;
+		gN3DSWorker.mQueue.push_back(tRequest);
+	}
+	gN3DSWorker.mCondition.notify_all();
+	return 1;
+}
+
+// The sprites read on the other core taken: each kept as the last one read
+// (the older ones going with the others kept); whether tPath's at tOffset
+// came and could not be read.
+static int takeN3DSStreamWorkerResults(const std::string* tPath, uint32_t tOffset) {
+	std::vector<N3DSStreamResult> done;
+	{
+		std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
+		if (gN3DSWorker.mDone.empty()) return 0;
+		done.swap(gN3DSWorker.mDone);
+	}
+	// This one last: kept at hand, not pushed out by the others.
+	std::stable_partition(done.begin(), done.end(), [&](const N3DSStreamResult& tResult) { return !isSameN3DSStreamRequest(tResult.mRequest, tPath, tOffset); });
+	int hasFailed = 0;
+	for (auto& result : done) {
+		const int isThisOne = isSameN3DSStreamRequest(result.mRequest, tPath, tOffset);
+		if (!result.mIsValid || result.mImage.empty()) {
+			if (isThisOne) hasFailed = 1;
+			continue;
+		}
+		if (gIsLoadingN3DSStream) continue;
+		stashN3DSStreamCache();
+		gN3DSStreamCache.mImage.swap(result.mImage);
+		gN3DSStreamCache.mPath = result.mRequest.mPath;
+		gN3DSStreamCache.mOffset = result.mRequest.mOffset;
+	}
+	return hasFailed;
 }
 
 static void waitForN3DSStreamWorker();
 
-// Waits for the sprite being read on the other core, then forgets it, and
-// has the other core close its file (nothing left in the heap's middle).
+// Forgets what was asked of the other core and waits for the sprite being
+// read there, then has it close its file (nothing left in the heap's middle).
 static void forgetN3DSStreamWorkerResult() {
 	if (!gN3DSWorker.mIsAvailable) return;
 	waitForN3DSStreamWorker();
 	{
 		std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
-		gN3DSWorker.mRequest = { NULL, 0, 0, N3DS_STREAM_CLOSE, 0, 0 };
-		gN3DSWorker.mState = N3DS_WORKER_ASKED;
+		gN3DSWorker.mQueue.push_back({ NULL, 0, 0, N3DS_STREAM_CLOSE, 0, 0 });
 	}
-	gN3DSWorker.mCondition.notify_one();
+	gN3DSWorker.mCondition.notify_all();
 	waitForN3DSStreamWorker();
 }
 
 static void waitForN3DSStreamWorker() {
+	{
+		std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
+		// The others asked not read (a close request kept).
+		for (auto it = gN3DSWorker.mQueue.begin(); it != gN3DSWorker.mQueue.end();) {
+			if (it->mKind == N3DS_STREAM_CLOSE) ++it;
+			else it = gN3DSWorker.mQueue.erase(it);
+		}
+	}
 	for (;;) {
 		{
 			std::lock_guard<std::mutex> lock(gN3DSWorker.mMutex);
-			if (gN3DSWorker.mState != N3DS_WORKER_ASKED && gN3DSWorker.mState != N3DS_WORKER_WORKING) {
-				std::vector<uint8_t>().swap(gN3DSWorker.mResult);
-				gN3DSWorker.mState = N3DS_WORKER_IDLE;
+			if (gN3DSWorker.mQueue.empty() && !gN3DSWorker.mIsWorking) {
+				std::vector<N3DSStreamResult>().swap(gN3DSWorker.mDone);
 				return;
 			}
 		}
@@ -1847,9 +1923,10 @@ static void waitForN3DSStreamWorker() {
 
 // Small sprites are read on the game's core at once (as before the other
 // core: their effects drawn when they come) for up to this long a frame;
-// the big ones, and the rest, on the other core.
+// the big ones, and the rest, on the other core (several asked at once:
+// 8 ms a frame here was a third of a heavy fight's frame).
 static const uint32_t N3DS_STREAM_SMALL_LENGTH = 64 * 1024;
-static const double N3DS_STREAM_SYNC_MS_A_FRAME = 8.0;
+static const double N3DS_STREAM_SYNC_MS_A_FRAME = 4.0;
 
 static int isN3DSStreamCached(const N3DSSpriteStream* e) {
 	if (!gN3DSStreamCache.mImage.empty() && gN3DSStreamCache.mPath == e->mPath && gN3DSStreamCache.mOffset == e->mOffset) return 1;
@@ -1877,28 +1954,12 @@ static int loadN3DSSpriteStreamTried(N3DSSpriteStream* e, unsigned char* oIndice
 	startN3DSStreamWorker();
 	const int hasWorker = gN3DSWorker.mIsAvailable && isN3DSStreamKindOnWorker(e->mKind) && !gN3DSStreamsForceSync;
 	if (hasWorker) {
-		std::unique_lock<std::mutex> lock(gN3DSWorker.mMutex);
-		if (gN3DSWorker.mState == N3DS_WORKER_DONE) {
-			const int isThisOne = gN3DSWorker.mRequest.mPath == e->mPath && gN3DSWorker.mRequest.mOffset == e->mOffset;
-			if (gN3DSWorker.mIsResultValid && !gIsLoadingN3DSStream) {
-				// Kept as the last one read, whichever it is: its pieces come next.
-				stashN3DSStreamCache();
-				gN3DSStreamCache.mImage.swap(gN3DSWorker.mResult);
-				gN3DSStreamCache.mPath = gN3DSWorker.mRequest.mPath;
-				gN3DSStreamCache.mOffset = gN3DSWorker.mRequest.mOffset;
-			}
-			std::vector<uint8_t>().swap(gN3DSWorker.mResult);
-			gN3DSWorker.mState = N3DS_WORKER_IDLE;
-			lock.unlock();
-			if (isThisOne) {
-				if (!isN3DSStreamCached(e)) return N3DS_STREAM_FAILED;
-				if (oIndices) copyN3DSStreamPiece(e, makeBuffer(gN3DSStreamCache.mImage.data(), uint32_t(gN3DSStreamCache.mImage.size())), oIndices, tWidth, tHeight);
-				return N3DS_STREAM_LOADED;
-			}
-			lock.lock();
+		if (takeN3DSStreamWorkerResults(e->mPath, e->mOffset)) return N3DS_STREAM_FAILED;
+		if (isN3DSStreamCached(e)) {
+			if (oIndices) copyN3DSStreamPiece(e, makeBuffer(gN3DSStreamCache.mImage.data(), uint32_t(gN3DSStreamCache.mImage.size())), oIndices, tWidth, tHeight);
+			return N3DS_STREAM_LOADED;
 		}
-		const int isAskedAlready = gN3DSWorker.mState != N3DS_WORKER_IDLE && gN3DSWorker.mRequest.mPath == e->mPath && gN3DSWorker.mRequest.mOffset == e->mOffset;
-		if (isAskedAlready) return N3DS_STREAM_PENDING;
+		if (isN3DSStreamAskedOfWorker(e->mPath, e->mOffset)) return N3DS_STREAM_PENDING;
 	}
 
 	// A small one, while this frame's time for them lasts: read here now.
@@ -1932,12 +1993,8 @@ static int loadN3DSSpriteStreamTried(N3DSSpriteStream* e, unsigned char* oIndice
 		return N3DS_STREAM_LOADED;
 	}
 
-	std::unique_lock<std::mutex> lock(gN3DSWorker.mMutex);
-	if (gN3DSWorker.mState != N3DS_WORKER_IDLE) return N3DS_STREAM_PENDING;   // busy with another: asked again next frame
-	gN3DSWorker.mRequest = { e->mPath, e->mOffset, e->mLength, e->mKind, e->mBytesPerLine, e->mHeight };
-	gN3DSWorker.mState = N3DS_WORKER_ASKED;
-	lock.unlock();
-	gN3DSWorker.mCondition.notify_one();
+	// (No room for another: asked again next frame.)
+	askN3DSStreamOfWorker({ e->mPath, e->mOffset, e->mLength, e->mKind, e->mBytesPerLine, e->mHeight });
 	return N3DS_STREAM_PENDING;
 }
 
@@ -1965,12 +2022,8 @@ static void readN3DSSpriteStreamAhead(N3DSTextureStream* tStream) {
 	if (e->mFailedFrame) return;
 	const size_t need = size_t(e->mBytesPerLine) * e->mHeight * 2 + e->mLength + 1024 * 1024;
 	if (getN3DSHeapFree() < need) return;
-	std::unique_lock<std::mutex> lock(gN3DSWorker.mMutex);
-	if (gN3DSWorker.mState != N3DS_WORKER_IDLE) return;
-	gN3DSWorker.mRequest = { e->mPath, e->mOffset, e->mLength, e->mKind, e->mBytesPerLine, e->mHeight };
-	gN3DSWorker.mState = N3DS_WORKER_ASKED;
-	lock.unlock();
-	gN3DSWorker.mCondition.notify_one();
+	if (isN3DSStreamAskedOfWorker(e->mPath, e->mOffset)) return;
+	askN3DSStreamOfWorker({ e->mPath, e->mOffset, e->mLength, e->mKind, e->mBytesPerLine, e->mHeight });
 }
 
 static void copyN3DSStreamPiece(const N3DSSpriteStream* e, const Buffer& tImage, unsigned char* oIndices, int tWidth, int tHeight) {

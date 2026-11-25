@@ -268,14 +268,7 @@ namespace prism {
 		const int w = tTexture.mTextureSize.x, h = tTexture.mTextureSize.y;
 		unsigned char* indices = (unsigned char*)malloc(w * h);
 		if (!indices) return;   // the simulated heap full: not checked this time
-		const unsigned char* p = texture->mIndexed;
-		const unsigned char* end = p + texture->mIndexedSize;
-		int i = 0;
-		while (p < end && i < w * h) {
-			const int c = *p++;
-			if (c & 0x80) { int run = (c & 0x7F) + 1; if (run > w * h - i) run = w * h - i; memset(indices + i, *p++, run); i += run; }
-			else { int length = c + 1; if (length > w * h - i) length = w * h - i; memcpy(indices + i, p, length); p += c + 1; i += length; }
-		}
+		decodeN3DSIndices(texture->mIndexed, texture->mIndexedSize, indices, w * h);
 		static const u8 order[64] = { 0,1,4,5,16,17,20,21, 2,3,6,7,18,19,22,23, 8,9,12,13,24,25,28,29, 10,11,14,15,26,27,30,31, 32,33,36,37,48,49,52,53, 34,35,38,39,50,51,54,55, 40,41,44,45,56,57,60,61, 42,43,46,47,58,59,62,63 };
 		const int id = tTexture.mPaletteID & 3;
 		u16 colors[256];
@@ -367,6 +360,8 @@ namespace prism {
 		gDraw.mMatrix = matMult4D(gDraw.mMatrix, createScaleMatrix4D(Vector3D(scale, scale, 1)));
 	}
 
+	extern size_t gN3DSIndexRunsBytes, gN3DSIndexKeptBytes, gN3DSIndexRawBytes;
+
 	static void drawSimulated(const TextureData& tTexture) {
 		gSim.mDraws++;
 		prepareN3DSTexture(tTexture);
@@ -377,6 +372,7 @@ namespace prism {
 		fprintf(stderr, "n3dssim: %lu frames, %lu draws, %lu paletted checked, %lu wrong; linear %zu KB used of %zu; deferred %u, made late %u, let go %u, made again for a palette %u\n",
 			gSim.mFrames, gSim.mDraws, gSim.mChecked, gSim.mMismatches, gLinearUsed / 1024, getBudget() / 1024,
 			gN3DSPerf.mDeferredTextures, gN3DSPerf.mLateTextures, gN3DSPerf.mEvictedTextures, gN3DSPerf.mRepaletted);
+		if (gN3DSIndexRawBytes) fprintf(stderr, "n3dssim: sprite indices kept: %zu KB of %zu KB (as runs: %zu KB)\n", gN3DSIndexKeptBytes / 1024, gN3DSIndexRawBytes / 1024, gN3DSIndexRunsBytes / 1024);
 	}
 
 	void initDrawing() { for (int i = 0; i < 4; i++) gN3DSPaletteVersions[i] = 0; simDrawingIdentity(); }

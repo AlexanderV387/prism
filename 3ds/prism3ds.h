@@ -55,12 +55,22 @@ namespace prism {
 	// A sound read by tRead straight into linear memory (soundeffect_3ds.cpp);
 	// its ID, -1 if it could not be, -2 if it has to be read whole first.
 	int loadN3DSSoundEffectFromReader(void (*tRead)(void* tCaller, void* tDst, uint32_t tSize), void* tCaller, uint32_t tLength);
+	// A long sound of a file (tLength bytes at tOffset, a WAV) read from it
+	// while it plays, not kept in memory; -2 if it cannot be (load it as
+	// the others), -1 if it is not a WAV this plays.
+	int loadN3DSStreamedSoundEffect(const char* tPath, uint32_t tOffset, uint32_t tLength);
+	int getN3DSSoundsStreamed();
+	// The streamed sounds' buffers filled (the music's thread, each DSP frame).
+	void fillN3DSSoundStreams();
 	// The sounds kept smaller, and left out, for want of linear memory.
 	int getN3DSSoundsShrunk();
 	// A .snd's part of the linear memory left for sounds (the next one
 	// loaded; back to all of it after), and its start and end.
 	void setN3DSSoundFileShare(float tShare);
 	void setN3DSTextureLoadReserve(size_t tReserve);
+	// Sprites' indices kept with zstd from now on (1), not as runs (0): a third
+	// smaller, slower to make (a big fight).
+	void setN3DSKeptIndicesSmaller(int tIsSmaller);
 	void startN3DSSoundFile(size_t tFileSize);
 	int getN3DSSoundFileHalvings();
 	void endN3DSSoundFile();
@@ -73,6 +83,8 @@ namespace prism {
 
 	// The palette a paletted texture's texels are made with (RGBA5551).
 	void getN3DSTexturePalette(const TextureData& tTexture, u16* oColors);
+	// A paletted texture's kept indices (mIndexed, mIndexedSize) back to tSize bytes.
+	void decodeN3DSIndices(const unsigned char* tData, int tDataSize, unsigned char* oDst, int tSize);
 
 	// A new frame (drawing_3ds.cpp): textures drawn in it, or the one
 	// before, keep their texels.
