@@ -45,6 +45,19 @@ namespace prism {
 		42, 43, 46, 47, 58, 59, 62, 63,
 	};
 
+	// For each pair of texels in a tile's order (2k and 2k+1: side by side
+	// in the same row), its row's index in the tile, times 8, plus the
+	// first's x; made from gTileOrder.
+	static u8 gTileTexel[32];
+	static int initTileTexels() {
+		for (int row = 0; row < 8; row++) {
+			for (int x = 0; x < 8; x += 2) gTileTexel[gTileOrder[row * 8 + x] >> 1] = (u8)(row * 8 + x);
+		}
+		return 1;
+	}
+	static const int gTileTexelsReady = initTileTexels();
+	static_assert(sizeof(gTileOrder) == 64, "tiles of 8x8");
+
 	static const int MAXIMUM_TEXTURE_SIZE = 1024;
 
 	// The texels of the image's row y: the texel of pixel x is at
@@ -908,11 +921,50 @@ namespace prism {
 		const int isInAtlas = texture->mAtlasPage >= 0;
 		const int placeX = isInAtlas ? texture->mAtlasX : 0, placeY = isInAtlas ? texture->mAtlasY : 0;
 
+		// A texture of its own: its whole tiles filled one after the other,
+		// two texels at a time, in the texels' order (its rows of 8 tiles at
+		// once); only the tiles the sprite covers in part as below. As fast
+		// as the rows' way for small ones, faster for big ones (full-screen
+		// pictures, New Kyouki's ultimates).
+		int firstPartialY = 0, partialX = 0;
+		if (!isInAtlas && fullBlocks > 0 && h >= 8) {
+			const int stride = tTexture.mTextureSize.x;
+			const int tilesWide = tex->width >> 3;
+			const int firstFullRow = (tex->height - h + 7) >> 3;
+			for (int r = firstFullRow; r < (tex->height >> 3); r++) {
+				// Its texel rows, from the texture's bottom: y = height - 1 - (8r + i).
+				const unsigned char* lines[8];
+				for (int i = 0; i < 8; i++) lines[i] = tIndices + (tex->height - 1 - (r * 8 + i)) * stride;
+				u32* tile = (u32*)(dst + (size_t)r * tilesWide * 64);
+				for (int b = 0; b < fullBlocks; b++, tile += 32) {
+					const int x0 = b << 3;
+					for (int k = 0; k < 32; k++) {
+						const u8 at = gTileTexel[k];
+						const unsigned char* line = lines[at >> 3] + x0 + (at & 7);
+						tile[k] = palette[line[0]] | ((u32)palette[line[1]] << 16);
+					}
+				}
+			}
+			// What is left: the rows of the tiles covered in part (the
+			// sprite's last ones), and the columns right of the whole tiles.
+			firstPartialY = tex->height - firstFullRow * 8;
+			partialX = fullBlocks << 3;
+		}
+
 		for (int y = 0; y < h; y++) {
 			const TexelRow row = texelRow(placeY + y, tex);
 			const unsigned char* line = tIndices + y * tTexture.mTextureSize.x;
 			u16* block = dst + row.mBase + ((placeX >> 3) << 6);
 			const u8* order = row.mOrder;
+			if (y < firstPartialY && partialX) {
+				// Its whole tiles already filled: only the ones right of them.
+				block += (partialX >> 3) << 6;
+				line += partialX;
+				for (int x = 0; x < (w & 7); x++) {
+					block[order[x]] = palette[line[x]];
+				}
+				continue;
+			}
 			for (int b = 0; b < fullBlocks; b++, block += 64, line += 8) {
 				block[order[0]] = palette[line[0]];
 				block[order[1]] = palette[line[1]];
@@ -1040,7 +1092,10 @@ namespace prism {
 			static const int traceLate = getenv("N3DS_SIM_TRACE_LATE") ? 1 : 0;
 			if (traceLate) {
 				static std::map<Texture, int> made;
-				printf("LATE %u %dx%d %s %s made %d\n", gN3DSTextureFrame, tTexture.mTextureSize.x, tTexture.mTextureSize.y, texture->mStream ? "streamed" : "kept", texture->mAtlasPage >= 0 ? "atlas" : "own", ++made[texture]);
+				static std::map<Texture, unsigned int> lastMade;
+				const unsigned int last = lastMade.count(texture) ? lastMade[texture] : 0;
+				lastMade[texture] = gN3DSTextureFrame;
+				printf("LATE %u %dx%d %s %s made %d tex %p gap %u\n", gN3DSTextureFrame, tTexture.mTextureSize.x, tTexture.mTextureSize.y, texture->mStream ? "streamed" : "kept", texture->mAtlasPage >= 0 ? "atlas" : "own", ++made[texture], (void*)texture, last ? gN3DSTextureFrame - last : 0);
 			}
 #endif
 		}
